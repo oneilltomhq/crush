@@ -5,7 +5,11 @@
   "description": "Agentic chromium shell with 3D terminal",
   "permissions": [
     "sidePanel",
-    "activeTab"
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://api.anthropic.com/*"
   ],
   "background": {
     "service_worker": "dist/background.js",
