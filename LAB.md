@@ -291,3 +291,23 @@ The 8 commands already PoC'd in `voice-browser-agent` (navigate, snapshot, click
 ❓ What's missing for full parity? Likely: scroll, hover, select, check/uncheck, drag, upload, network interception, PDF export
 
 ❓ Do we need parity, or is "good enough for an LLM agent loop" a different (smaller) surface?
+
+---
+
+## CrushProgram interface
+
+✅ **Programs are async functions** that receive a `ProgramContext` with `stdout`, `stdin`, `args`, and `term`. `run()` returns `Promise<number>` (exit code).
+
+✅ **Foreground program model:** when a program is running, `LocalShell.feed()` routes all keystrokes to the program's `StdinStream` instead of the shell's line editor. When the program exits (promise resolves), the shell resumes with a new prompt.
+
+✅ **stdin is an `AsyncIterable<string>`** backed by `StdinStream`. The shell pushes raw keystroke data; programs consume via `for await (const chunk of ctx.stdin)`. `StdinStream.close()` signals EOF.
+
+✅ **One-shot programs** (echo, help, clear, colors, date) write to stdout and return immediately — stdin is never read.
+
+✅ **Interactive programs** (future: agent chat, browser automation) read from stdin in a loop. They own their own line editing, prompt rendering, and input interpretation.
+
+✅ **Command registry** in `LocalShell.commands` maps command names to `CrushProgram` instances. `registerCommand()` adds commands at runtime.
+
+❓ Future context fields: `chrome` (RPC to service worker for CDP/tabs), `scene` (THREE.js scene for 3D rendering). Not yet wired.
+
+❓ Signal handling (Ctrl+C to interrupt a running program) — currently keystrokes go to the program's stdin; the program must handle ^C itself. May want a shell-level kill mechanism.

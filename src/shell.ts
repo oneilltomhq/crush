@@ -5,26 +5,32 @@
  *   keyboard → InputHandler → onData → LocalShell → ghosttyTerm.write()
  *
  * Handles line-editing (echo, backspace, cursor movement) and dispatches
- * completed lines to a command handler. Replace with a WebSocket PTY
- * bridge when a real shell backend is available.
+ * completed lines to a command handler. When a foreground program is running,
+ * keystrokes are routed to the program's stdin instead of the line editor.
  */
 
 import type { GhosttyTerminal } from './ghostty/ghostty';
+import type { CrushProgram } from './program';
+import { StdinStream } from './program';
+import { BUILTIN_COMMANDS } from './commands';
 
 export interface LocalShellOptions {
   term: GhosttyTerminal;
-  /** Optional command handler. Return output string (may include ANSI). */
-  onCommand?: (cmd: string) => string | null;
+  /** Extra commands to register (merged with built-ins) */
+  commands?: Record<string, CrushProgram>;
 }
 
 export class LocalShell {
   private term: GhosttyTerminal;
-  private onCommand: (cmd: string) => string | null;
+  private commands: Record<string, CrushProgram>;
   private lineBuf = '';
+
+  /** When set, a foreground program is running and keystrokes go to its stdin */
+  private fgStdin: StdinStream | null = null;
 
   constructor(opts: LocalShellOptions) {
     this.term = opts.term;
-    this.onCommand = opts.onCommand ?? defaultCommandHandler;
+    this.commands = { ...BUILTIN_COMMANDS, ...opts.commands };
   }
 
   /** Show the initial banner and first prompt */
@@ -36,8 +42,19 @@ export class LocalShell {
     this.writePrompt();
   }
 
+  /** Register additional commands at runtime */
+  registerCommand(name: string, program: CrushProgram): void {
+    this.commands[name] = program;
+  }
+
   /** Feed raw input data (from InputHandler callback) */
   feed(data: string): void {
+    // If a foreground program is running, route all input to it
+    if (this.fgStdin) {
+      this.fgStdin.push(data);
+      return;
+    }
+
     for (const ch of data) {
       this.processChar(ch);
     }
@@ -52,18 +69,14 @@ export class LocalShell {
       const cmd = this.lineBuf.trim();
       this.lineBuf = '';
       if (cmd.length > 0) {
-        const output = this.onCommand(cmd);
-        if (output !== null) {
-          this.term.write(output);
-          if (!output.endsWith('\n')) this.term.write('\r\n');
-        }
+        this.dispatch(cmd);
+      } else {
+        this.writePrompt();
       }
-      this.writePrompt();
     } else if (code === 0x7f || code === 0x08) {
       // Backspace / DEL
       if (this.lineBuf.length > 0) {
         this.lineBuf = this.lineBuf.slice(0, -1);
-        // Move cursor back, overwrite with space, move back again
         this.term.write('\b \b');
       }
     } else if (code === 0x03) {
@@ -72,7 +85,7 @@ export class LocalShell {
       this.lineBuf = '';
       this.writePrompt();
     } else if (code === 0x04) {
-      // Ctrl+D on empty line — no-op (no real shell to exit)
+      // Ctrl+D on empty line — no-op
       if (this.lineBuf.length === 0) {
         this.term.write('\r\n');
         this.writePrompt();
@@ -86,7 +99,6 @@ export class LocalShell {
       }
     } else if (code === 0x1b) {
       // Escape sequences (arrows etc.) — swallow for now
-      // Multi-byte sequences will come as separate chars from the encoder
     } else if (code >= 0x20) {
       // Printable character — echo and buffer
       this.lineBuf += ch;
@@ -94,58 +106,49 @@ export class LocalShell {
     }
   }
 
-  private writePrompt(): void {
-    this.term.write('\x1b[1;32mcrush\x1b[0m \x1b[34m$\x1b[0m ');
-  }
-}
+  private dispatch(cmdLine: string): void {
+    const parts = cmdLine.split(/\s+/);
+    const name = parts[0].toLowerCase();
+    const args = parts.slice(1);
 
-function defaultCommandHandler(cmd: string): string | null {
-  const parts = cmd.split(/\s+/);
-  const name = parts[0].toLowerCase();
-  const args = parts.slice(1);
-
-  switch (name) {
-    case 'help':
-      return [
-        '\x1b[1mAvailable commands:\x1b[0m',
-        '  \x1b[33mhelp\x1b[0m          Show this message',
-        '  \x1b[33mecho\x1b[0m [text]   Print text',
-        '  \x1b[33mclear\x1b[0m         Clear screen',
-        '  \x1b[33mcolors\x1b[0m        Show color palette',
-        '  \x1b[33mdate\x1b[0m          Show current date/time',
-        '',
-        'This is a local terminal — no PTY backend yet.',
-        'Connect a WebSocket PTY server for a real shell.',
-      ].join('\r\n');
-
-    case 'echo':
-      return args.join(' ');
-
-    case 'clear':
-      return '\x1b[2J\x1b[H';
-
-    case 'colors': {
-      const lines: string[] = ['Standard colors:'];
-      let row = '';
-      for (let i = 0; i < 8; i++) row += `\x1b[4${i}m  \x1b[0m`;
-      lines.push(row);
-      row = '';
-      for (let i = 0; i < 8; i++) row += `\x1b[10${i}m  \x1b[0m`;
-      lines.push(row);
-      lines.push('');
-      lines.push('Foreground:');
-      row = '';
-      for (let i = 0; i < 8; i++) row += `\x1b[3${i}m█\x1b[0m`;
-      row += ' ';
-      for (let i = 0; i < 8; i++) row += `\x1b[1;3${i}m█\x1b[0m`;
-      lines.push(row);
-      return lines.join('\r\n');
+    const program = this.commands[name];
+    if (!program) {
+      this.term.write(`\x1b[31mcrush:\x1b[0m command not found: ${name}\r\n`);
+      this.writePrompt();
+      return;
     }
 
-    case 'date':
-      return new Date().toString();
+    this.runProgram(program, args);
+  }
 
-    default:
-      return `\x1b[31mcrush:\x1b[0m command not found: ${name}`;
+  /** Launch a program in the foreground */
+  private runProgram(program: CrushProgram, args: string[]): void {
+    const stdin = new StdinStream();
+    this.fgStdin = stdin;
+
+    const ctx = {
+      stdout: (data: string) => this.term.write(data),
+      stdin,
+      args,
+      term: this.term,
+    };
+
+    program
+      .run(ctx)
+      .then(() => {
+        this.fgStdin = null;
+        stdin.close();
+        this.writePrompt();
+      })
+      .catch((err) => {
+        this.fgStdin = null;
+        stdin.close();
+        this.term.write(`\x1b[31mcrush: program error:\x1b[0m ${err}\r\n`);
+        this.writePrompt();
+      });
+  }
+
+  private writePrompt(): void {
+    this.term.write('\x1b[1;32mcrush\x1b[0m \x1b[34m$\x1b[0m ');
   }
 }
