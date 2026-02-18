@@ -47,12 +47,13 @@ Each task requires a **Findings** entry on completion: the answer, outcome, or c
   Findings: Separable. surface.md updated with confirmed details. Full librarian analysis in thread T-019c6c97-c0b8-7646-ad78-f04099a1182a.
 
 - [ ] **#12 — WASM VT emulator spike**
-  Depends on: #1 (done)
+  Depends on: #1 (done), ADR-001 (accepted — use GhosttyTerminal directly)
   Task sequence:
-  1. Clone ghostty, run `zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall lib-vt`
-  2. Write minimal JS harness: instantiate WASM module, feed bytes, read dirty rows, read cells
-  3. Run harness in a Dedicated Worker inside a Chrome extension context
-  4. Measure: parse throughput (bytes/sec), memory footprint, cell read latency
+  1. Use pre-built WASM binary from `vendor/ghostty-web/ghostty-vt.wasm` (~404KB)
+  2. Import `GhosttyTerminal` from `vendor/ghostty-web/lib/ghostty.ts`, instantiate in a Dedicated Worker
+  3. Feed test byte streams via `write()`, exercise `update()` → `isRowDirty()` → `getViewport()` → `markClean()` cycle
+  4. Measure: parse throughput (bytes/sec), memory footprint, cell read latency, WASM↔JS boundary overhead
+  5. Verify the `GhosttyCell` struct (16 bytes: codepoint, fg/bg RGB, flags, width, hyperlink_id, grapheme_len) carries enough info for SDF rendering
   Findings: _pending_
 
 ## Dropped

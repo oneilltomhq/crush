@@ -212,17 +212,31 @@ Legend: **✅ confirmed** · **⚠️ possible but hard/fragile** · **❌ hard 
 
 ✅ Build target: `wasm32-freestanding` (Zig, not Rust — ghostty is Zig)
 
+### coder/ghostty-web and our integration path (see ADR-001)
+
+✅ **[coder/ghostty-web](https://github.com/coder/ghostty-web) solves the WASM export problem.** Stock lib-vt only exports sub-parsers. ghostty-web applies a patch (`patches/ghostty-wasm-api.patch`) adding ~40 Terminal C ABI exports: lifecycle, write, resize, render state, dirty tracking, cell reading, scrollback, mode queries, DSR responses. WASM binary is ~404KB, committed in vendored repo.
+
+✅ **`GhosttyTerminal` (`lib/ghostty.ts`, ~540 lines) is a pure WASM data wrapper.** No DOM, no Canvas, no events. Exposes: `write()`, `resize()`, `update()` → `DirtyState`, `isRowDirty(y)`, `getViewport()` → `GhosttyCell[]`, `getCursor()`, `getGrapheme(row, col)`, `markClean()`, scrollback APIs, mode queries, response reading. Zero-allocation cell pool internally. Entirely renderer-agnostic.
+
+✅ **Damage tracking API is answered.** `update()` returns `DirtyState` enum: `NONE` (0), `PARTIAL` (1), `FULL` (2). FULL fires on screen switches (normal ↔ alternate). Per-row granularity via `isRowDirty(y)`. Call `markClean()` after rendering.
+
+✅ **`GhosttyCell` is a 16-byte struct:** codepoint (u32), fg_r/g/b, bg_r/g/b, flags (bold/italic/underline/strikethrough/inverse/invisible/blink/faint as bitfield), width, hyperlink_id (u16), grapheme_len. Colors are pre-resolved to RGB by WASM — no palette lookup needed on JS side.
+
+✅ **`KeyEncoder` (also in `lib/ghostty.ts`) is renderer-agnostic.** Converts keyboard events to terminal escape sequences using ghostty's key encoding. Usable independently of the Terminal class.
+
+✅ **ghostty-web's `Terminal` class and `CanvasRenderer` are NOT used.** They couple Canvas 2D rendering, DOM elements, scrollbar animations, and xterm.js event patterns. We use `GhosttyTerminal` directly. See ADR-001.
+
 ⚠️ WASM threads require `SharedArrayBuffer` which requires cross-origin isolation (COOP+COEP) — MV3 can configure this but adds complexity
 
 ⚠️ Unicode width/grapheme handling must be deterministic and match common terminal behaviour
+
+⚠️ ghostty-web's WASM patch must stay compatible with ghostty upstream — patch is minimal, maintainers track upstream, but drift is possible on major ghostty releases
 
 ❌ Cannot run a local PTY in the browser — no subprocess spawning
 
 ❌ To connect to a real shell: need Native Messaging host (local helper binary) or remote shell over WebSocket/SSH
 
 ❓ Single-threaded WASM performance for VT parsing — is it fast enough, or will we need threads?
-
-❓ What does the damage tracking API actually look like? Does it report changed rows/rects efficiently?
 
 ---
 

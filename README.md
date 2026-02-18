@@ -19,7 +19,7 @@ A browser-native agent shell, by extension.
 **Rendering layer** — A 3D multiplexed terminal experience:
 - Three.js WebGPU renderer with TSL shader blocks
 - SDF text rendering (inspired by [Three.js Blocks](https://github.com/nicokoenig/threejs-blocks))
-- libghostty-vt compiled to WASM for in-browser terminal emulation
+- Ghostty VT core compiled to WASM (via [coder/ghostty-web](https://github.com/coder/ghostty-web)) for in-browser terminal emulation
 - Tabs rendered as 3D terminal panes in an orchestration window
 
 ## Status
