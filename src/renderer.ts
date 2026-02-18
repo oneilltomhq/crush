@@ -1,7 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { BatchedText, Text } from '@three-blocks/core';
 import { Ghostty, DirtyState } from './ghostty/ghostty';
-import type { GhosttyCell } from './ghostty/types';
 import type { GhosttyTerminal } from './ghostty/ghostty';
 import ghosttyWasmUrl from '../vendor/ghostty-web/ghostty-vt.wasm?url';
 
@@ -14,32 +13,28 @@ let renderer: THREE.WebGPURenderer;
 let scene: THREE.Scene;
 let camera: THREE.OrthographicCamera;
 let batchedText: any = null;
+let ghosttyInstance: Ghostty | null = null;
 let ghosttyTerm: GhosttyTerminal | null = null;
 let textInstances: any[] = [];
 let instanceIds: number[] = [];
 const _cellColor = new THREE.Color();
 
-export async function initTerminalRenderer(container: HTMLElement): Promise<void> {
-  // --- Ghostty WASM ---
-  const ghostty = await Ghostty.load(ghosttyWasmUrl);
-  ghosttyTerm = ghostty.createTerminal(COLS, ROWS);
+// Cursor state
+let cursorMesh: THREE.Mesh | null = null;
+let cursorVisible = true;
+let cursorBlinkTime = 0;
+const CURSOR_BLINK_RATE = 530; // ms
 
-  // Write some test content
-  ghosttyTerm.write('Welcome to \x1b[1;36mCrush\x1b[0m terminal\r\n');
-  ghosttyTerm.write('Ghostty WASM + Three.js Blocks SDF rendering\r\n');
-  ghosttyTerm.write('\r\n');
-  ghosttyTerm.write('\x1b[32m$\x1b[0m echo "hello world"\r\n');
-  ghosttyTerm.write('hello world\r\n');
-  ghosttyTerm.write('\r\n');
-  // Color test
-  for (let i = 0; i < 8; i++) {
-    ghosttyTerm.write(`\x1b[3${i}m█\x1b[0m`);
-  }
-  ghosttyTerm.write('\r\n');
-  for (let i = 0; i < 8; i++) {
-    ghosttyTerm.write(`\x1b[1;3${i}m█\x1b[0m`);
-  }
-  ghosttyTerm.write('\r\n');
+export interface TerminalRendererHandle {
+  ghostty: Ghostty;
+  term: GhosttyTerminal;
+  container: HTMLElement;
+}
+
+export async function initTerminalRenderer(container: HTMLElement): Promise<TerminalRendererHandle> {
+  // --- Ghostty WASM ---
+  ghosttyInstance = await Ghostty.load(ghosttyWasmUrl);
+  ghosttyTerm = ghosttyInstance.createTerminal(COLS, ROWS);
 
   // --- Three.js WebGPU renderer ---
   renderer = new THREE.WebGPURenderer({ antialias: true });
@@ -57,11 +52,20 @@ export async function initTerminalRenderer(container: HTMLElement): Promise<void
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x050505);
 
+  // --- Cursor (simple block behind text) ---
+  const cursorGeo = new THREE.PlaneGeometry(CELL_WIDTH, CELL_HEIGHT);
+  const cursorMat = new THREE.MeshBasicNodeMaterial({
+    color: 0xcccccc,
+    transparent: true,
+    opacity: 0.7,
+  });
+  cursorMesh = new THREE.Mesh(cursorGeo, cursorMat);
+  cursorMesh.position.set(0, 0, 1); // z=1 behind text at z=0 (both in front of camera)
+  scene.add(cursorMesh);
+
   // --- BatchedText for SDF glyph rendering ---
   const totalCells = COLS * ROWS;
   const material = new THREE.MeshBasicNodeMaterial({ color: 0xffffff });
-  // Each cell is one Text instance with a single character
-  // maxGlyphCount: 6 vertices per char × 1 char × totalCells
   batchedText = new BatchedText(totalCells, totalCells * 6, material);
   batchedText.matrixAutoUpdate = false;
 
@@ -86,11 +90,10 @@ export async function initTerminalRenderer(container: HTMLElement): Promise<void
     batchedText.sync(() => resolve(), renderer);
   });
 
-  // Initial render from WASM state
-  updateFromGhostty();
-
-  // Animation loop
-  renderer.setAnimationLoop(() => {
+  // Animation loop — update terminal state + render every frame
+  renderer.setAnimationLoop((time: number) => {
+    updateFromGhostty();
+    updateCursor(time);
     renderer.render(scene, camera);
   });
 
@@ -104,6 +107,8 @@ export async function initTerminalRenderer(container: HTMLElement): Promise<void
     camera.bottom = -gridH;
     camera.updateProjectionMatrix();
   });
+
+  return { ghostty: ghosttyInstance, term: ghosttyTerm, container };
 }
 
 function updateFromGhostty(): void {
@@ -129,4 +134,29 @@ function updateFromGhostty(): void {
 
   batchedText.sync(undefined, renderer);
   ghosttyTerm.markClean();
+}
+
+function updateCursor(time: number): void {
+  if (!ghosttyTerm || !cursorMesh) return;
+
+  const cursor = ghosttyTerm.getCursor();
+
+  // Blink
+  if (cursor.visible) {
+    const blinkPhase = Math.floor(time / CURSOR_BLINK_RATE) % 2;
+    cursorVisible = blinkPhase === 0;
+  } else {
+    cursorVisible = false;
+  }
+
+  cursorMesh.visible = cursorVisible;
+
+  if (cursorVisible) {
+    // Position cursor block: center of the cell
+    cursorMesh.position.set(
+      cursor.x * CELL_WIDTH + CELL_WIDTH / 2,
+      -(cursor.y * CELL_HEIGHT) - CELL_HEIGHT / 2,
+      1,
+    );
+  }
 }
