@@ -1,5 +1,7 @@
 # crush — agent guide
 
+> **Keep this file under 2 000 tokens.** It is injected into every agent context window — bloat here causes context rot everywhere. Be terse. Move detail to ADRs or `surface.md`.
+
 ## Repository layout
 
 | Path | Purpose |
