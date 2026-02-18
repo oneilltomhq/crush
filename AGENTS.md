@@ -1,6 +1,6 @@
 # crush — agent guide
 
-> **Keep this file under 2 000 tokens.** It is injected into every agent context window — bloat here causes context rot everywhere. Be terse. Move detail to ADRs or `surface.md`.
+> **Keep this file under 2 000 tokens.** It is injected into every agent context window — bloat here causes context rot everywhere. Be terse. Move detail to ADRs or `LAB.md`.
 
 ## Repository layout
 
@@ -11,7 +11,7 @@
 | `vendor/ghostty-web/` | coder/ghostty-web checkout (WASM build + TS wrapper) |
 | `voice-browser-agent/` | Reference material — existing Chrome extension with CDP automation. Do not modify. |
 | `adr/` | Architecture Decision Records |
-| `surface.md` | Technical surface area — confirmed capabilities, walls, open questions |
+| `LAB.md` | What the browser can and can't do — confirmed capabilities, walls, open questions |
 | `TODO.md` | Action items with required findings on completion |
 
 ## Conventions
