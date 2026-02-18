@@ -1,10 +1,12 @@
 # crush
 
-Agentic chromium shell — a Chrome extension that acts as an agentic interface to the browser's power tools (debugger, side panel, screen capture), with a 3D multiplexed terminal UI built on Three.js WebGPU, SDF text rendering, and libghostty-vt.
+A browser-native agent shell, by extension.
 
 ## Why
 
-The browser is a zero-setup sandbox. Every end user already has one — no sysadmin or dev experience required, just install the extension. **crush** turns that sandbox into a programmable shell where LLM agents can see, navigate, and operate the browser on the user's behalf, inheriting their existing cookies, auth state, and extensions.
+- The browser is already a sandbox with a permission model — agents get power tools without root access
+- Every end user already has one — no sysadmin, no daemon, just install the extension
+- Agents inherit what the user already has: cookies, auth state, extensions
 
 ## What
 
@@ -17,7 +19,7 @@ The browser is a zero-setup sandbox. Every end user already has one — no sysad
 **Rendering layer** — A 3D multiplexed terminal experience:
 - Three.js WebGPU renderer with TSL shader blocks
 - SDF text rendering (inspired by [Three.js Blocks](https://github.com/nicokoenig/threejs-blocks))
-- libghostty-vt compiled to WASM for in-browser terminal emulation
+- Ghostty VT core compiled to WASM (via [coder/ghostty-web](https://github.com/coder/ghostty-web)) for in-browser terminal emulation
 - Tabs rendered as 3D terminal panes in an orchestration window
 
 ## Status
