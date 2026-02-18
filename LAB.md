@@ -1,6 +1,6 @@
-# crush — technical surface
+# crush — lab notes
 
-What we know, what we don't. Organised by browser surface area, with a section for boundaries and cross-cutting concerns.
+What we know, what we don't, what we've proven in code. Organised by browser surface area, with a section for boundaries and cross-cutting concerns.
 
 Legend: **✅ confirmed** · **⚠️ possible but hard/fragile** · **❌ hard wall** · **❓ open question**
 
@@ -174,13 +174,13 @@ Legend: **✅ confirmed** · **⚠️ possible but hard/fragile** · **❌ hard 
 
 ✅ WebGPU available in extension pages (side panel, extension tab, options page) — they're secure contexts
 
-✅ SDF/MSDF terminal text rendering is proven feasible — instanced quads with glyph atlas, one/few draw calls
+✅ SDF text rendering working end-to-end — Three.js Blocks `BatchedText` renders 80×24 grid (1920 Text instances) in a single draw call via WebGPU, with per-cell color via `setColorAt()`
 
 ✅ 50+ terminal panes (80×24 = ~1920 cells each → ~100k glyph instances) is realistic with proper batching
 
 ✅ Dirty updates: update instance buffer subranges for changed cells/rows only — avoids full buffer rewrites
 
-✅ MSDF generally better than single-channel SDF for small terminal fonts
+✅ Vite build pipeline proven for WASM + WebGPU extension: `?url` imports for WASM assets, production build copies to `dist/` with hashed names
 
 ⚠️ Popup is technically possible but short-lived and throttled — not suitable for continuous rendering
 
@@ -214,9 +214,9 @@ Legend: **✅ confirmed** · **⚠️ possible but hard/fragile** · **❌ hard 
 
 ### coder/ghostty-web and our integration path (see ADR-001)
 
-✅ **[coder/ghostty-web](https://github.com/coder/ghostty-web) solves the WASM export problem.** Stock lib-vt only exports sub-parsers. ghostty-web applies a patch (`patches/ghostty-wasm-api.patch`) adding ~40 Terminal C ABI exports: lifecycle, write, resize, render state, dirty tracking, cell reading, scrollback, mode queries, DSR responses. WASM binary is ~404KB, committed in vendored repo.
+✅ **[coder/ghostty-web](https://github.com/coder/ghostty-web) solves the WASM export problem.** Stock lib-vt only exports sub-parsers. ghostty-web applies a patch (`patches/ghostty-wasm-api.patch`) adding ~40 Terminal C ABI exports: lifecycle, write, resize, render state, dirty tracking, cell reading, scrollback, mode queries, DSR responses. WASM binary is 423KB (from npm package), vendored at `vendor/ghostty-web/ghostty-vt.wasm`.
 
-✅ **`GhosttyTerminal` (`lib/ghostty.ts`, ~540 lines) is a pure WASM data wrapper.** No DOM, no Canvas, no events. Exposes: `write()`, `resize()`, `update()` → `DirtyState`, `isRowDirty(y)`, `getViewport()` → `GhosttyCell[]`, `getCursor()`, `getGrapheme(row, col)`, `markClean()`, scrollback APIs, mode queries, response reading. Zero-allocation cell pool internally. Entirely renderer-agnostic.
+✅ **`GhosttyTerminal` is a pure WASM data wrapper.** Ported into `src/ghostty/ghostty.ts` (~540 lines). No DOM, no Canvas, no events. Exposes: `write()`, `resize()`, `update()` → `DirtyState`, `isRowDirty(y)`, `getViewport()` → `GhosttyCell[]`, `getCursor()`, `getGrapheme(row, col)`, `markClean()`, scrollback APIs, mode queries, response reading. Zero-allocation cell pool internally. Entirely renderer-agnostic.
 
 ✅ **Damage tracking API is answered.** `update()` returns `DirtyState` enum: `NONE` (0), `PARTIAL` (1), `FULL` (2). FULL fires on screen switches (normal ↔ alternate). Per-row granularity via `isRowDirty(y)`. Call `markClean()` after rendering.
 
