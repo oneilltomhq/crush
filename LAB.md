@@ -294,6 +294,24 @@ The 8 commands already PoC'd in `voice-browser-agent` (navigate, snapshot, click
 
 ---
 
+## Storage architecture (ADR-002)
+
+✅ **chrome.storage.local for API keys and settings.** Keys stored under `crush:auth:<provider>`, settings under `crush:settings`. Available in all extension contexts. `StorageBackend` interface with `ChromeStorageBackend` (real) and `MemoryStorageBackend` (testing).
+
+✅ **OPFS for workspace files.** `WorkspaceFS` interface with `readText`, `writeText`, `list`, `exists`, `mkdirp`, `remove`. `OpfsWorkspaceFS` stores under `crush/workspaces/<id>/` in OPFS. `MemoryWorkspaceFS` for testing. Agent file tools call through WorkspaceFS, never OPFS directly.
+
+✅ **Agent loop runs in side panel** — both OPFS and chrome.storage.local are accessible. No service worker suspension issues.
+
+✅ **`"storage"` permission** added to manifest.json. `host_permissions` for `api.anthropic.com` added for direct LLM fetch from side panel.
+
+⚠️ OPFS is wiped on extension uninstall — not durable for user-critical files
+
+❓ File System Access API (`showDirectoryPicker`) for real disk access — future `FsaWorkspaceFS` implementation
+
+❓ IndexedDB for conversation history search/indexing — deferred
+
+---
+
 ## CrushProgram interface
 
 ✅ **Programs are async functions** that receive a `ProgramContext` with `stdout`, `stdin`, `args`, and `term`. `run()` returns `Promise<number>` (exit code).
