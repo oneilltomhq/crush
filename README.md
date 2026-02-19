@@ -12,23 +12,55 @@ A browser-native agent shell, by extension.
 
 **Shell layer** — A Manifest V3 Chrome extension exposing the browser's power tools to LLM agents:
 - `chrome.debugger` / CDP for tab automation (navigate, click, type, snapshot, screenshot)
-- Side Panel API for persistent chat UI
-- Screen capture and tab management
-- Accessibility tree + DOMSnapshot ref system for element targeting
+- Side Panel API for persistent chat UI and agent runtime
+- Local shell with line editing, program model, and built-in commands (`help`, `echo`, `clear`, `colors`, `date`)
+- Storage backend (`chrome.storage.local`) for API keys and settings
+- OPFS-based virtual filesystem for workspace files
 
-**Rendering layer** — A 3D multiplexed terminal experience:
-- Three.js WebGPU renderer with TSL shader blocks
-- SDF text rendering (inspired by [Three.js Blocks](https://github.com/nicokoenig/threejs-blocks))
-- Ghostty VT core compiled to WASM (via [coder/ghostty-web](https://github.com/coder/ghostty-web)) for in-browser terminal emulation
-- Tabs rendered as 3D terminal panes in an orchestration window
+**Rendering layer** — A 3D terminal rendered in the side panel:
+- Three.js WebGPU renderer with SDF text via [Three.js Blocks](https://github.com/nicokoenig/threejs-blocks) `BatchedText`
+- Ghostty VT core compiled to WASM (via [coder/ghostty-web](https://github.com/coder/ghostty-web)) — full terminal emulation driving the renderer
+- 80×24 grid of individually colored glyphs in a single draw call, with cursor blinking
+- Keyboard input translated to terminal escape sequences via `KeyEncoder`
 
 ## Status
 
-Early exploration — discovering how the shell and rendering layers connect through empirical Q&A. Current questions:
-- Can we render live tab content as Three.js textures/portals in a single orchestration pane?
-- What does a multiplexed terminal UX look like when the "terminals" are browser tabs driven by agents?
-- How far can libghostty-vt go in the browser via WASM?
+Working end-to-end: the side panel boots a WebGPU renderer backed by Ghostty's WASM VT emulator, with a local shell accepting commands. No PTY backend yet — connect a WebSocket server for a real shell.
+
+Active areas: CDP agent commands, offscreen document handoff for background operation, tab capture → WebGPU texture pipeline. See `TODO.md` for specifics.
+
+## Architecture
+
+| Concern | Owner |
+|---|---|
+| Agent loop + rendering | Side panel |
+| Privileged APIs (CDP, tabs) | Service worker (thin RPC bridge) |
+| Terminal emulation | Ghostty WASM (`GhosttyTerminal`) |
+| Keyboard encoding | `KeyEncoder` (ghostty-web) |
+| Persistent state | `chrome.storage.local` / OPFS |
+
+See `adr/` for architecture decision records, `LAB.md` for confirmed capabilities and open questions.
+
+## Getting started
+
+```bash
+npm install
+npm run build
+```
+
+Then load the extension in Chrome:
+
+1. Go to `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked** and select the project root (the directory containing `manifest.json`)
+4. Click the Crush extension icon to open the side panel
+
+For development with hot reload:
+
+```bash
+npm run dev
+```
 
 ## Tech
 
-TypeScript · Three.js · WebGPU · TSL · libghostty-vt · Chrome Extension · Manifest V3 · Side Panel API · Chrome DevTools Protocol · LLM Agents
+TypeScript · Three.js · WebGPU · SDF text · libghostty-vt (WASM) · Chrome Extension (MV3) · Side Panel API · Chrome DevTools Protocol
