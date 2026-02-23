@@ -40,7 +40,7 @@
  *   - scene:  THREE.js scene access for 3D textures, camera, etc.
  */
 
-import type { GhosttyTerminal } from './ghostty/ghostty';
+import type { GhosttyTerminal } from 'ghostty-web';
 
 /** Context provided to a running program */
 export interface ProgramContext {

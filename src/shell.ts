@@ -9,7 +9,7 @@
  * keystrokes are routed to the program's stdin instead of the line editor.
  */
 
-import type { GhosttyTerminal } from './ghostty/ghostty';
+import type { GhosttyTerminal } from 'ghostty-web';
 import type { CrushProgram } from './program';
 import { StdinStream } from './program';
 import { BUILTIN_COMMANDS } from './commands';

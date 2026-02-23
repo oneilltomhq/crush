@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { BatchedText, Text } from '@three-blocks/core';
-import { Ghostty, DirtyState } from './ghostty/ghostty';
-import type { GhosttyTerminal } from './ghostty/ghostty';
-import ghosttyWasmUrl from '../vendor/ghostty-web/ghostty-vt.wasm?url';
+import { Ghostty } from 'ghostty-web';
+import type { GhosttyTerminal } from 'ghostty-web';
+import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
 
 const COLS = 80;
 const ROWS = 24;
@@ -115,7 +115,7 @@ function updateFromGhostty(): void {
   if (!ghosttyTerm || !batchedText) return;
 
   const dirty = ghosttyTerm.update();
-  if (dirty === DirtyState.NONE) return;
+  if (dirty === 0 /* DirtyState.NONE */) return;
 
   const cells = ghosttyTerm.getViewport();
 

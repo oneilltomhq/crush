@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@three-blocks/core": "^0.0.55",
+    "ghostty-web": "github:oneilltomhq/ghostty-web#fix/export-runtime-enums",
     "three": "^0.182.0"
   },
   "devDependencies": {

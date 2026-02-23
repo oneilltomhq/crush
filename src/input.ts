@@ -5,8 +5,8 @@
  * down: no mouse, no selection, no IME (yet). Just keyboard → bytes.
  */
 
-import type { Ghostty, KeyEncoder } from './ghostty/ghostty';
-import { Key, KeyAction, KeyEncoderOption, Mods } from './ghostty/types';
+import type { Ghostty, KeyEncoder } from 'ghostty-web';
+import { Key, KeyAction, KeyEncoderOption, Mods } from 'ghostty-web';
 
 /** Map KeyboardEvent.code → Ghostty Key enum */
 const KEY_MAP: Record<string, Key> = {
@@ -168,7 +168,7 @@ export class InputHandler {
         key,
         mods,
         utf8,
-      });
+      } as any);
 
       if (encoded.length > 0) {
         e.preventDefault();
