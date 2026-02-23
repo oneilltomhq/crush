@@ -43,11 +43,10 @@ export async function initTerminalRenderer(container: HTMLElement): Promise<Term
   container.appendChild(renderer.domElement);
   await renderer.init();
 
-  // Orthographic camera sized to terminal grid
-  const gridW = COLS * CELL_WIDTH;
-  const gridH = ROWS * CELL_HEIGHT;
-  camera = new THREE.OrthographicCamera(0, gridW, 0, -gridH, 0.1, 100);
+  // Orthographic camera — fit terminal grid into container
+  camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
   camera.position.set(0, 0, 10);
+  fitCameraToGrid(container);
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x050505);
@@ -99,16 +98,40 @@ export async function initTerminalRenderer(container: HTMLElement): Promise<Term
 
   window.addEventListener('resize', () => {
     renderer.setSize(container.clientWidth, container.clientHeight);
-    const gridW = COLS * CELL_WIDTH;
-    const gridH = ROWS * CELL_HEIGHT;
-    camera.left = 0;
-    camera.right = gridW;
-    camera.top = 0;
-    camera.bottom = -gridH;
-    camera.updateProjectionMatrix();
+    fitCameraToGrid(container);
   });
 
   return { ghostty: ghosttyInstance, term: ghosttyTerm, container };
+}
+
+function fitCameraToGrid(container: HTMLElement): void {
+  // Cells are centered on their position, so the grid extends half a cell
+  // beyond the first/last column and row.
+  const gridL = -CELL_WIDTH / 2;
+  const gridR = COLS * CELL_WIDTH - CELL_WIDTH / 2;
+  const gridT = CELL_HEIGHT / 2;
+  const gridB = -(ROWS * CELL_HEIGHT - CELL_HEIGHT / 2);
+  const gridW = gridR - gridL;
+  const gridH = gridT - gridB;
+  const aspect = container.clientWidth / container.clientHeight;
+  const gridAspect = gridW / gridH;
+
+  if (aspect > gridAspect) {
+    // Container is wider than grid — fit height, expand width
+    camera.top = gridT;
+    camera.bottom = gridB;
+    const extra = gridH * aspect - gridW;
+    camera.left = gridL - extra / 2;
+    camera.right = gridR + extra / 2;
+  } else {
+    // Container is taller than grid — fit width, expand height
+    camera.left = gridL;
+    camera.right = gridR;
+    const extra = gridW / aspect - gridH;
+    camera.top = gridT + extra / 2;
+    camera.bottom = gridB - extra / 2;
+  }
+  camera.updateProjectionMatrix();
 }
 
 function updateFromGhostty(): void {
