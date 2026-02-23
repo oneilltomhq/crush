@@ -48,16 +48,24 @@ This works in both dev (Vite serves it correctly) and production (Vite copies th
 
 Files in `src/` are one level below the project root. To reach `vendor/` from `src/renderer.ts`, the path is `../vendor/`, NOT `../../vendor/` (which escapes the project entirely).
 
-### Three.js Blocks — BatchedText per-instance color
+### SDF text pipeline — UV orientation
 
-`Text.color` can be set before adding to a batch, but to update color at runtime on a `BatchedText`, you must:
-1. Store the instance ID returned by `batchedText.addText(text)`
-2. Use `batchedText.setColorAt(instanceId, color)` with a `THREE.Color`
+Canvas rasterizes glyphs top-to-bottom (row 0 = top), but `PlaneGeometry` UV v=0 is at the bottom of the quad. The shader in `BatchedText.buildMaterial` flips V accordingly. Do not "fix" this by setting `texture.flipY = true` — it will double-flip.
 
-Do NOT call `textInstance.color.setRGB()` on batched members — it does not propagate to the GPU buffers.
+### Browser debugging with agent-browser
 
-### Three.js Blocks — LLM documentation
+A headed Chrome runs on the host with `--remote-debugging-port=9222`. Vite dev server is on port 3000. To debug rendering in-browser:
 
-Three.js Blocks publishes LLM-optimized docs. Before guessing at the API, read them:
-- Index: `https://www.threejs-blocks.com/llm/core/llms.txt`
-- Full API: `https://www.threejs-blocks.com/llm/core/llms-full.txt`
+```sh
+# Get the CDP websocket URL (agent-browser needs the full ws:// URL)
+curl -s http://localhost:9222/json/version | jq -r .webSocketDebuggerUrl
+CDP_WS="ws://localhost:9222/devtools/browser/<id>"
+
+# Navigate, inspect, screenshot
+agent-browser --cdp "$CDP_WS" open "http://localhost:3000/sidepanel.html"
+agent-browser --cdp "$CDP_WS" console        # view diagnostic logs
+agent-browser --cdp "$CDP_WS" screenshot /tmp/out.png
+agent-browser --cdp "$CDP_WS" eval "someJs()"
+```
+
+Do NOT use `agent-browser --cdp 9222` (bare port) — it fails. Always use the full websocket URL from `/json/version`.
