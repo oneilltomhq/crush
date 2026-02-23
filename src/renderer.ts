@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { BatchedText, Text } from '@three-blocks/core';
+import { BatchedText, Text } from './sdf-text';
 import { Ghostty } from 'ghostty-web';
 import type { GhosttyTerminal } from 'ghostty-web';
 import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
