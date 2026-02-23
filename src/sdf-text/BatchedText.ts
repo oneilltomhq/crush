@@ -3,10 +3,11 @@ import {
   texture,
   uv,
   smoothstep,
-  instancedBufferAttribute,
+  attribute,
   Fn,
   vec4,
   float,
+  select,
 } from 'three/tsl';
 import { FontAtlas } from './FontAtlas';
 import type { Text } from './Text';
@@ -58,14 +59,16 @@ export class BatchedText extends THREE.InstancedMesh {
 
   private buildMaterial(material: THREE.NodeMaterial): void {
     const sdfTex = texture(this.atlas.texture);
-    const aGlyphUV = instancedBufferAttribute(this.glyphUVArray, 'vec4', 4, 0);
-    const aColor = instancedBufferAttribute(this.colorArray, 'vec3', 3, 0);
+    const aGlyphUV = attribute('aGlyphUV', 'vec4');
+    const aColor = attribute('aColor', 'vec3');
 
-    // Map quad UV [0,1] into atlas UV for this glyph
+    // Map quad UV [0,1] into atlas UV for this glyph.
+    // Flip V: canvas rasterizes top-to-bottom (row 0 = top) but
+    // PlaneGeometry UV v=0 is bottom, so invert Y to match.
     const quadUV = uv();
     const atlasUV = vec4(
       aGlyphUV.x.add(quadUV.x.mul(aGlyphUV.z)),
-      aGlyphUV.y.add(quadUV.y.mul(aGlyphUV.w)),
+      aGlyphUV.y.add(float(1).sub(quadUV.y).mul(aGlyphUV.w)),
       0,
       0,
     );
@@ -75,7 +78,12 @@ export class BatchedText extends THREE.InstancedMesh {
     // Smoothstep anti-aliased edge
     const edge = float(0.5);
     const edgeWidth = float(0.1);
-    const alpha = smoothstep(edge.sub(edgeWidth), edge.add(edgeWidth), sdfValue);
+    const sdfAlpha = smoothstep(edge.sub(edgeWidth), edge.add(edgeWidth), sdfValue);
+
+    // Zero-size UV rect means blank/space — force alpha to 0 so it doesn't
+    // accidentally sample the glyph at atlas position (0,0).
+    const isBlank = aGlyphUV.z.equal(float(0));
+    const alpha = select(isBlank, float(0), sdfAlpha);
 
     material.colorNode = Fn(() => {
       return vec4(aColor, alpha);
