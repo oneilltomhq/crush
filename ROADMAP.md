@@ -11,8 +11,8 @@ Tests + CI so the demo doesn't break while we build it. One day, not a quality c
 - [x] Vitest setup — install, configure, one passing test to prove the pipeline
 - [x] Test `StdinStream` — queued push before `next()`, `close()` unblocks pending `next()`, push-after-close ignored
 - [x] Test `CrushAuthStorage` — key prefixing, get/set/delete via `MemoryStorageBackend`
-- [ ] Test `MemoryWorkspaceFS` — path normalisation, `..` traversal rejection, basic CRUD
-- [ ] Test `LocalShell` — command dispatch with args, unknown command error, foreground program captures input then returns control to shell
+- [x] Test `MemoryWorkspaceFS` — path normalisation, `..` traversal rejection, basic CRUD
+- [x] Test `LocalShell` — command dispatch with args, unknown command error, foreground program captures input then returns control to shell
 - [x] CI — GitHub Actions: `tsc --noEmit` + `vitest run`. Lint later.
 - [ ] Wire `AbortController` into `ProgramContext` so foreground programs (especially the future agent) can be interrupted via Ctrl+C
 
