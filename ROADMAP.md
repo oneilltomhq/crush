@@ -14,7 +14,7 @@ Tests + CI so the demo doesn't break while we build it. One day, not a quality c
 - [x] Test `MemoryWorkspaceFS` — path normalisation, `..` traversal rejection, basic CRUD
 - [x] Test `LocalShell` — command dispatch with args, unknown command error, foreground program captures input then returns control to shell
 - [x] CI — GitHub Actions: `tsc --noEmit` + `vitest run`. Lint later.
-- [ ] Wire `AbortController` into `ProgramContext` so foreground programs (especially the future agent) can be interrupted via Ctrl+C
+- [x] Wire `AbortController` into `ProgramContext` so foreground programs (especially the future agent) can be interrupted via Ctrl+C
 
 ## M1 — Browser control wired
 
