@@ -329,3 +329,13 @@ The 8 commands already PoC'd in `voice-browser-agent` (navigate, snapshot, click
 ❓ Future context fields: `chrome` (RPC to service worker for CDP/tabs), `scene` (THREE.js scene for 3D rendering). Not yet wired.
 
 ❓ Signal handling (Ctrl+C to interrupt a running program) — currently keystrokes go to the program's stdin; the program must handle ^C itself. May want a shell-level kill mechanism.
+
+---
+
+## Reference projects
+
+✅ **[opentui](https://github.com/anomalyco/opentui)** — native terminal UI framework (Zig core + TS bindings, powers OpenCode). Zero DOM dependencies: renders to an in-memory cell buffer, diffs it, emits pure ANSI/VT escape sequences to stdout. Layout via Yoga (WASM). React and Solid reconcilers available.
+
+❌ Can't run in-browser as-is — Zig core loads via `bun:ffi` (`dlopen`), I/O is `process.stdin`/`process.stdout`.
+
+❓ Could run server-side (Bun process) and pipe VT bytes over a WebSocket into `ghosttyTerm.write()` — structurally identical to an SSH session. Worth experimenting with if we need a rich TUI layer beyond raw escape sequences.
