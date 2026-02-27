@@ -25,10 +25,14 @@ let cursorVisible = true;
 let cursorBlinkTime = 0;
 const CURSOR_BLINK_RATE = 530; // ms
 
+// Screenshot plane
+let screenshotPlane: THREE.Mesh | null = null;
+
 export interface TerminalRendererHandle {
   ghostty: Ghostty;
   term: GhosttyTerminal;
   container: HTMLElement;
+  scene: THREE.Scene;
 }
 
 export async function initTerminalRenderer(container: HTMLElement): Promise<TerminalRendererHandle> {
@@ -101,7 +105,32 @@ export async function initTerminalRenderer(container: HTMLElement): Promise<Term
     fitCameraToGrid(container);
   });
 
-  return { ghostty: ghosttyInstance, term: ghosttyTerm, container };
+  return { ghostty: ghosttyInstance, term: ghosttyTerm, container, scene };
+}
+
+export function updateScreenshotTexture(base64Data: string) {
+  if (!renderer || !scene) return;
+
+  const loader = new THREE.TextureLoader();
+  loader.load(`data:image/png;base64,${base64Data}`, (texture) => {
+    // The texture is ready, let's create or update the plane
+    if (!screenshotPlane) {
+      const planeGeo = new THREE.PlaneGeometry(1, 1); // Start with a 1x1 plane
+      const planeMat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.8 });
+      screenshotPlane = new THREE.Mesh(planeGeo, planeMat);
+      screenshotPlane.position.z = -5; // Behind the text
+      scene.add(screenshotPlane);
+    } else {
+      (screenshotPlane.material as THREE.MeshBasicMaterial).map = texture;
+      (screenshotPlane.material as THREE.MeshBasicMaterial).needsUpdate = true;
+    }
+
+    // Adjust plane scale to match screenshot aspect ratio
+    const aspectRatio = texture.image.width / texture.image.height;
+    const planeHeight = ROWS * CELL_HEIGHT * 0.8; // Make it 80% of the terminal height
+    const planeWidth = planeHeight * aspectRatio;
+    screenshotPlane.scale.set(planeWidth, planeHeight, 1);
+  });
 }
 
 function fitCameraToGrid(container: HTMLElement): void {

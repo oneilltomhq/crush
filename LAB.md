@@ -326,7 +326,9 @@ The 8 commands already PoC'd in `voice-browser-agent` (navigate, snapshot, click
 
 ✅ **Command registry** in `LocalShell.commands` maps command names to `CrushProgram` instances. `registerCommand()` adds commands at runtime.
 
-❓ Future context fields: `chrome` (RPC to service worker for CDP/tabs), `scene` (THREE.js scene for 3D rendering). Not yet wired.
+✅ `chrome` (RPC to service worker for CDP/tabs) is wired.
+
+❓ Future context fields: `scene` (THREE.js scene for 3D rendering). Not yet wired.
 
 ❓ Signal handling (Ctrl+C to interrupt a running program) — currently keystrokes go to the program's stdin; the program must handle ^C itself. May want a shell-level kill mechanism.
 

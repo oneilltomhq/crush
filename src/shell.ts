@@ -1,63 +1,56 @@
 /**
  * LocalShell — provides a basic command-line interface without a real PTY.
- *
- * Sits between the input handler and the terminal emulator:
- *   keyboard → InputHandler → onData → LocalShell → ghosttyTerm.write()
- *
- * Handles line-editing (echo, backspace, cursor movement) and dispatches
- * completed lines to a command handler. When a foreground program is running,
- * keystrokes are routed to the program's stdin instead of the line editor.
  */
 
 import type { GhosttyTerminal } from 'ghostty-web';
-import type { CrushProgram } from './program';
+import type { CrushProgram, ProgramContext } from './program';
 import { StdinStream } from './program';
 import { BUILTIN_COMMANDS } from './commands';
+import { agentCmd } from './agent';
+import { rpc } from './chrome-rpc';
+import { getMotd } from './motd';
+import type { WorkspaceFS } from './fs';
+import { resolve, toRelative } from './path';
+import type { Scene } from 'three';
+
 
 export interface LocalShellOptions {
   term: GhosttyTerminal;
-  /** Extra commands to register (merged with built-ins) */
+  scene: Scene;
+  chrome: typeof rpc;
+  fs: WorkspaceFS;
   commands?: Record<string, CrushProgram>;
 }
 
 export class LocalShell {
   private term: GhosttyTerminal;
+  private scene: Scene;
+  private chrome: typeof rpc;
+  private fs: WorkspaceFS;
   private commands: Record<string, CrushProgram>;
   private lineBuf = '';
-
-  /** When set, a foreground program is running and keystrokes go to its stdin */
+  private cwd = '/';
   private fgStdin: StdinStream | null = null;
-
-  /** AbortController for the currently running foreground program */
   private fgAbortController: AbortController | null = null;
 
   constructor(opts: LocalShellOptions) {
     this.term = opts.term;
-    this.commands = { ...BUILTIN_COMMANDS, ...opts.commands };
+    this.scene = opts.scene;
+    this.chrome = opts.chrome;
+    this.fs = opts.fs;
+    this.commands = { ...BUILTIN_COMMANDS, agent: agentCmd, ...opts.commands };
   }
 
-  /** Show the initial banner and first prompt */
   start(): void {
-    this.term.write('Welcome to \x1b[1;36mCrush\x1b[0m terminal\r\n');
-    this.term.write('Ghostty WASM + Three.js WebGPU SDF rendering\r\n');
-    this.term.write('Type \x1b[33mhelp\x1b[0m for available commands.\r\n');
-    this.term.write('\r\n');
+    this.term.write(getMotd());
     this.writePrompt();
   }
 
-  /** Register additional commands at runtime */
-  registerCommand(name: string, program: CrushProgram): void {
-    this.commands[name] = program;
-  }
-
-  /** Feed raw input data (from InputHandler callback) */
   feed(data: string): void {
-    // If a foreground program is running, route all input to it
     if (this.fgStdin) {
       this.fgStdin.push(data);
       return;
     }
-
     for (const ch of data) {
       this.processChar(ch);
     }
@@ -67,7 +60,6 @@ export class LocalShell {
     const code = ch.charCodeAt(0);
 
     if (ch === '\r') {
-      // Enter — submit line
       this.term.write('\r\n');
       const cmd = this.lineBuf.trim();
       this.lineBuf = '';
@@ -77,53 +69,46 @@ export class LocalShell {
         this.writePrompt();
       }
     } else if (code === 0x7f || code === 0x08) {
-      // Backspace / DEL
       if (this.lineBuf.length > 0) {
         this.lineBuf = this.lineBuf.slice(0, -1);
         this.term.write('\b \b');
       }
     } else if (code === 0x03) {
-      // Ctrl+C — cancel line OR abort foreground program
       if (this.fgStdin && this.fgAbortController) {
-        // Abort the running program
         this.fgAbortController.abort();
         this.term.write('^C\r\n');
       } else {
-        // Cancel line input
         this.term.write('^C\r\n');
         this.lineBuf = '';
         this.writePrompt();
       }
-    } else if (code === 0x04) {
-      // Ctrl+D on empty line — no-op
-      if (this.lineBuf.length === 0) {
-        this.term.write('\r\n');
-        this.writePrompt();
-      }
-    } else if (code === 0x0c) {
-      // Ctrl+L — clear screen
-      this.term.write('\x1b[2J\x1b[H');
-      this.writePrompt();
-      if (this.lineBuf.length > 0) {
-        this.term.write(this.lineBuf);
-      }
-    } else if (code === 0x1b) {
-      // Escape sequences (arrows etc.) — swallow for now
     } else if (code >= 0x20) {
-      // Printable character — echo and buffer
+      if (this.lineBuf.length === 0) {
+        this.term.write('\x1b[?25l');
+      }
       this.lineBuf += ch;
       this.term.write(ch);
     }
   }
 
-  private dispatch(cmdLine: string): void {
+  private async dispatch(cmdLine: string): Promise<void> {
     const parts = cmdLine.split(/\s+/);
     const name = parts[0].toLowerCase();
     const args = parts.slice(1);
 
+    if (name === 'cd') {
+      await this.handleCd(args);
+      this.writePrompt();
+      return;
+    }
+
     const program = this.commands[name];
     if (!program) {
       this.term.write(`\x1b[31mcrush:\x1b[0m command not found: ${name}\r\n`);
+      const suggestion = this.findClosestCommand(name);
+      if (suggestion) {
+        this.term.write(`Did you mean '\x1b[33m${suggestion}\x1b[0m'?\r\n`);
+      }
       this.writePrompt();
       return;
     }
@@ -131,19 +116,67 @@ export class LocalShell {
     this.runProgram(program, args);
   }
 
-  /** Launch a program in the foreground */
+  private async handleCd(args: string[]): Promise<void> {
+      const targetPath = args[0] || '/';
+      const newPath = resolve(this.cwd, targetPath);
+      const stat = await this.fs.stat(toRelative(newPath));
+
+      if (stat && stat.kind === 'directory') {
+          this.cwd = newPath;
+      } else if (stat) {
+          this.term.write(`\x1b[31mcd: not a directory: ${newPath}\x1b[0m\r\n`);
+      } else {
+          this.term.write(`\x1b[31mcd: path not found: ${newPath}\x1b[0m\r\n`);
+      }
+  }
+
+  private findClosestCommand(cmd: string): string | null {
+    let bestMatch: string | null = null;
+    let minDistance = 3;
+
+    for (const knownCmd of Object.keys(this.commands)) {
+      const distance = this.levenshtein(cmd, knownCmd);
+      if (distance < minDistance) {
+        minDistance = distance;
+        bestMatch = knownCmd;
+      }
+    }
+    return bestMatch;
+  }
+
+  private levenshtein = (a: string, b: string): number => {
+    const matrix = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) matrix[0][j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + cost,
+        );
+      }
+    }
+    return matrix[a.length][b.length];
+  };
+
   private runProgram(program: CrushProgram, args: string[]): void {
     const stdin = new StdinStream();
     const abortController = new AbortController();
     this.fgStdin = stdin;
     this.fgAbortController = abortController;
 
-    const ctx = {
+    const ctx: ProgramContext = {
       stdout: (data: string) => this.term.write(data),
+      stderr: (data: string) => this.term.write(`\x1b[31m${data}\x1b[0m`),
       stdin,
       args,
       term: this.term,
+      scene: this.scene,
       abortSignal: abortController.signal,
+      chrome: this.chrome,
+      fs: this.fs,
+      cwd: this.cwd,
     };
 
     program
@@ -158,17 +191,15 @@ export class LocalShell {
         this.fgStdin = null;
         this.fgAbortController = null;
         stdin.close();
-        // Don't show error if program was aborted
-        if (err?.name === 'AbortError') {
-          this.term.write('\r\n');
-        } else {
-          this.term.write(`\x1b[31mcrush: program error:\x1b[0m ${err}\r\n`);
+        if (err?.name !== 'AbortError') {
+          this.term.write(`\x1b[31mcrush: program error:\x1b[0m ${err.message}\r\n`);
         }
         this.writePrompt();
       });
   }
 
   private writePrompt(): void {
-    this.term.write('\x1b[1;32mcrush\x1b[0m \x1b[34m$\x1b[0m ');
+    const path = this.cwd === '/' ? '~' : this.cwd;
+    this.term.write(`\x1b[?25h\x1b[1;32mcrush\x1b[0m:\x1b[1;34m${path}\x1b[0m \x1b[34m$\x1b[0m `);
   }
 }

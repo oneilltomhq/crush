@@ -1,12 +1,5 @@
 /**
  * WorkspaceFS — virtual filesystem interface for agent tools.
- *
- * Implementations:
- *   - OpfsWorkspaceFS: backed by Origin Private File System (browser sandbox)
- *   - MemoryWorkspaceFS: in-memory (testing, ephemeral sessions)
- *
- * All paths are relative (no leading slash). Directory separator is '/'.
- * Implementations normalise and reject traversal attempts ('..').
  */
 
 /** Directory entry returned by list() */
@@ -15,11 +8,17 @@ export interface DirEntry {
   kind: 'file' | 'directory';
 }
 
+/** Stat result */
+export interface FsStat {
+  kind: 'file' | 'directory';
+}
+
 /** Abstract filesystem for workspace files */
 export interface WorkspaceFS {
   readText(path: string): Promise<string>;
   writeText(path: string, content: string): Promise<void>;
   list(path: string): Promise<DirEntry[]>;
+  stat(path: string): Promise<FsStat | null>;
   exists(path: string): Promise<boolean>;
   mkdirp(path: string): Promise<void>;
   remove(path: string): Promise<void>;
@@ -30,7 +29,6 @@ export interface WorkspaceFS {
 // ---------------------------------------------------------------------------
 
 function normalisePath(raw: string): string {
-  // Strip leading/trailing slashes, collapse runs
   const parts = raw.split('/').filter((p) => p !== '' && p !== '.');
   for (const p of parts) {
     if (p === '..') throw new Error(`Path traversal not allowed: ${raw}`);
@@ -47,23 +45,12 @@ function splitPath(normalised: string): string[] {
 // OpfsWorkspaceFS
 // ---------------------------------------------------------------------------
 
-/**
- * OPFS-backed workspace filesystem.
- *
- * Each workspace is stored under a root prefix inside OPFS, e.g.
- * `crush/workspaces/<id>/`. The prefix is configured at construction time.
- */
 export class OpfsWorkspaceFS implements WorkspaceFS {
   private rootPrefix: string[];
-
-  /**
-   * @param prefix  Path segments under OPFS root, e.g. ['crush', 'workspaces', 'default']
-   */
   constructor(prefix: string[] = ['crush', 'workspaces', 'default']) {
     this.rootPrefix = prefix;
   }
 
-  /** Resolve the OPFS directory handle for the workspace root, creating dirs as needed */
   private async getRoot(): Promise<FileSystemDirectoryHandle> {
     let dir = await navigator.storage.getDirectory();
     for (const seg of this.rootPrefix) {
@@ -72,11 +59,7 @@ export class OpfsWorkspaceFS implements WorkspaceFS {
     return dir;
   }
 
-  /** Walk to the parent directory of a path, creating intermediates */
-  private async resolveParent(
-    root: FileSystemDirectoryHandle,
-    segments: string[],
-  ): Promise<{ parent: FileSystemDirectoryHandle; name: string }> {
+  private async resolveParent(root: FileSystemDirectoryHandle, segments: string[]): Promise<{ parent: FileSystemDirectoryHandle; name: string }> {
     if (segments.length === 0) throw new Error('Empty path');
     let dir = root;
     for (let i = 0; i < segments.length - 1; i++) {
@@ -85,16 +68,34 @@ export class OpfsWorkspaceFS implements WorkspaceFS {
     return { parent: dir, name: segments[segments.length - 1] };
   }
 
-  /** Walk to a directory handle (no create) */
-  private async resolveDir(
-    root: FileSystemDirectoryHandle,
-    segments: string[],
-  ): Promise<FileSystemDirectoryHandle> {
+  private async resolveDir(root: FileSystemDirectoryHandle, segments: string[]): Promise<FileSystemDirectoryHandle> {
     let dir = root;
     for (const seg of segments) {
       dir = await dir.getDirectoryHandle(seg);
     }
     return dir;
+  }
+  
+  async stat(path: string): Promise<FsStat | null> {
+    const segs = splitPath(normalisePath(path));
+    if (segs.length === 0) return { kind: 'directory' }; // Root
+    const root = await this.getRoot();
+    try {
+      const { parent, name } = await this.resolveParent(root, segs);
+      try {
+        await parent.getFileHandle(name);
+        return { kind: 'file' };
+      } catch {
+        await parent.getDirectoryHandle(name);
+        return { kind: 'directory' };
+      }
+    } catch {
+      return null;
+    }
+  }
+  
+  async exists(path: string): Promise<boolean> {
+    return (await this.stat(path)) !== null;
   }
 
   async readText(path: string): Promise<string> {
@@ -128,24 +129,6 @@ export class OpfsWorkspaceFS implements WorkspaceFS {
     return entries;
   }
 
-  async exists(path: string): Promise<boolean> {
-    const segs = splitPath(normalisePath(path));
-    if (segs.length === 0) return true; // root always exists
-    const root = await this.getRoot();
-    try {
-      const { parent, name } = await this.resolveParent(root, segs);
-      try {
-        await parent.getFileHandle(name);
-        return true;
-      } catch {
-        await parent.getDirectoryHandle(name);
-        return true;
-      }
-    } catch {
-      return false;
-    }
-  }
-
   async mkdirp(path: string): Promise<void> {
     const segs = splitPath(normalisePath(path));
     if (segs.length === 0) return;
@@ -175,9 +158,6 @@ function mkDir(): FsNode {
   return { kind: 'directory', children: new Map() };
 }
 
-/**
- * In-memory WorkspaceFS implementation for testing and ephemeral sessions.
- */
 export class MemoryWorkspaceFS implements WorkspaceFS {
   private root: FsNode = mkDir();
 
@@ -214,6 +194,18 @@ export class MemoryWorkspaceFS implements WorkspaceFS {
     return node;
   }
 
+  async stat(path: string): Promise<FsStat | null> {
+    const segs = splitPath(normalisePath(path));
+    if (segs.length === 0) return { kind: 'directory' }; // Root
+    const node = this.resolve(segs);
+    if (!node) return null;
+    return { kind: node.kind };
+  }
+  
+  async exists(path: string): Promise<boolean> {
+    return (await this.stat(path)) !== null;
+  }
+
   async readText(path: string): Promise<string> {
     const segs = splitPath(normalisePath(path));
     const node = this.resolve(segs);
@@ -224,7 +216,6 @@ export class MemoryWorkspaceFS implements WorkspaceFS {
   async writeText(path: string, content: string): Promise<void> {
     const segs = splitPath(normalisePath(path));
     if (segs.length === 0) throw new Error('Cannot write to root');
-    // ensure parent dirs
     this.ensureDir(segs.slice(0, -1));
     const parent = this.resolve(segs.slice(0, -1))!;
     if (parent.kind !== 'directory') throw new Error('Parent is not a directory');
@@ -241,12 +232,6 @@ export class MemoryWorkspaceFS implements WorkspaceFS {
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     return entries;
-  }
-
-  async exists(path: string): Promise<boolean> {
-    const segs = splitPath(normalisePath(path));
-    if (segs.length === 0) return true;
-    return this.resolve(segs) !== undefined;
   }
 
   async mkdirp(path: string): Promise<void> {
