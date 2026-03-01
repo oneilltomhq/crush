@@ -38,7 +38,7 @@ export interface VoiceClientOptions {
   onError?: (message: string) => void;
   onConnected?: (connected: boolean) => void;
   onCommand?: (command: { name: string; input: Record<string, unknown> }) => void;
-  onInit?: (data: { todo?: string }) => void;
+  onInit?: (data: { todo?: string; voiceCredentials?: { deepgramApiKey?: string; elevenlabsApiKey?: string } }) => void;
 }
 
 type ServerMessage =
@@ -46,7 +46,7 @@ type ServerMessage =
   | { type: 'thinking' }
   | { type: 'error'; message: string }
   | { type: 'command'; name: string; input: Record<string, unknown> }
-  | { type: 'init'; todo?: string };
+  | { type: 'init'; todo?: string; voiceCredentials?: { deepgramApiKey?: string; elevenlabsApiKey?: string } };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -101,6 +101,12 @@ export class VoiceClient {
   constructor(opts: VoiceClientOptions = {}) {
     this.opts = opts;
     this.wsUrl = opts.wsUrl ?? defaultTextWsUrl();
+  }
+
+  /** Set voice credentials (received from server). */
+  setCredentials(deepgramApiKey?: string, elevenlabsApiKey?: string): void {
+    if (deepgramApiKey) this.opts.deepgramApiKey = deepgramApiKey;
+    if (elevenlabsApiKey) this.opts.elevenlabsApiKey = elevenlabsApiKey;
   }
 
   // =========================================================================
@@ -185,6 +191,13 @@ export class VoiceClient {
     this.closeDeepgram();
     this.teardownMic();
     this.setState('idle');
+  }
+
+  /** Tell server to initiate conversation (agent speaks first). */
+  sendStartSignal(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: 'start' }));
+    this.setState('processing');
   }
 
   /** Send text directly (skip STT). */
@@ -381,7 +394,10 @@ export class VoiceClient {
         break;
 
       case 'init':
-        this.opts.onInit?.({ todo: msg.todo });
+        this.opts.onInit?.({
+          todo: (msg as any).todo,
+          voiceCredentials: (msg as any).voiceCredentials,
+        });
         break;
     }
   }

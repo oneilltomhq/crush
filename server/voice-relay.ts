@@ -29,6 +29,10 @@ import os from 'os';
 const CDP_HOST = process.env.CDP_HOST || 'localhost';
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222');
 
+// Voice credentials — server-side, sent to client in init
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || 'REDACTED_DEEPGRAM_KEY';
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || 'REDACTED_ELEVENLABS_KEY';
+
 const WS_PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === '--port') || '8092');
 
 const LLM_ENDPOINT = 'http://169.254.169.254/gateway/llm/anthropic/v1/messages';
@@ -224,7 +228,7 @@ The workspace is a grid of panes:
 - Text panes: scrollable text/markdown content
 - Task panes: labeled organizational cards
 
-On startup, three panes exist: "Shell" (PTY), "Todo" (text), and "Transcript" (conversation log). Don't recreate these.
+The workspace starts empty. Create panes only when the user asks or when it's clearly useful (e.g. user asks to work on code → open a shell).
 
 ## Rules
 
@@ -333,6 +337,49 @@ async function executeTool(
 }
 
 // ---------------------------------------------------------------------------
+// Process conversation start — agent speaks first
+// ---------------------------------------------------------------------------
+
+async function processStart(conn: Connection): Promise<void> {
+  if (conn.processing) return;
+  conn.processing = true;
+  const tag = `[voice:${conn.id}]`;
+  console.log(`${tag} Conversation started — agent speaks first`);
+
+  try {
+    send(conn.ws, { type: 'thinking' });
+    const systemPrompt = buildSystemPrompt();
+
+    // Seed with an instruction to introduce yourself
+    const todo = readTodo();
+    const hasTodo = todo && !todo.includes('No todo file found');
+    const prompt = hasTodo
+      ? '[System: The user just opened Crush and tapped to start. They have an existing todo list. Greet them briefly, mention how many items, and offer to get started. 1-2 short sentences. Warm, not cheesy.]'
+      : '[System: The user just opened Crush for the first time. Introduce yourself in one breath — what you are, what you can do. You\'re a voice workspace: you can open shells, browse the web, manage tasks, all by talking. Keep it to 2-3 short sentences. Sound like a person, not a product tour.]';
+    conn.history.push({ role: 'user', content: prompt });
+
+    const response = await callLLM(systemPrompt, conn.history);
+    conn.history.push({ role: 'assistant', content: response.content });
+
+    const spoken = response.content
+      .filter((b: ContentBlock) => b.type === 'text' && b.text)
+      .map((b: ContentBlock) => b.text)
+      .join(' ')
+      .trim();
+
+    if (spoken) {
+      send(conn.ws, { type: 'response', text: spoken });
+      console.log(`${tag} Opening: "${spoken.substring(0, 100)}"`);
+    }
+  } catch (err: any) {
+    console.error(`${tag} Start error:`, err.message);
+    send(conn.ws, { type: 'error', message: err.message });
+  } finally {
+    conn.processing = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Process user text — full tool use loop
 // ---------------------------------------------------------------------------
 
@@ -433,15 +480,25 @@ function handleConnection(ws: WebSocket): void {
 
   const conn: Connection = { ws, id, history: [], processing: false };
 
-  // Send initial state
-  send(ws, { type: 'init', todo: readTodo() });
+  // Send initial state + voice credentials
+  send(ws, {
+    type: 'init',
+    todo: readTodo(),
+    voiceCredentials: {
+      deepgramApiKey: DEEPGRAM_API_KEY,
+      elevenlabsApiKey: ELEVENLABS_API_KEY,
+    },
+  });
 
   ws.on('message', async (raw: Buffer | string) => {
     let msg: { type: string; text?: string };
     try { msg = JSON.parse(raw.toString()); }
     catch { send(ws, { type: 'error', message: 'Invalid JSON' }); return; }
 
-    if (msg.type === 'text' && msg.text?.trim()) {
+    if (msg.type === 'start') {
+      // Agent speaks first — generate an opening line
+      await processStart(conn);
+    } else if (msg.type === 'text' && msg.text?.trim()) {
       await processText(conn, msg.text.trim());
     }
   });

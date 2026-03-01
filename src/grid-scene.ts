@@ -47,9 +47,7 @@ const RELAY_WS_URL = params.get('relay') || `${wsBase}/ws/cdp`;
 const PTY_WS_URL = params.get('pty') || `${wsBase}/ws/pty`;
 const VOICE_WS_URL = params.get('voice') || `${wsBase}/ws/voice`;
 
-// Transcript pane
-let transcriptLines: string[] = [];
-let transcriptPane: TextPane | null = null;
+// Transcript (DOM overlay only, no 3D pane)
 
 // Depth navigation
 let currentParentId: string | null = null;
@@ -111,12 +109,59 @@ async function init() {
   if (demoMode === 'browser') {
     runBrowserDemo();
   } else {
-    // Start with one PTY pane
-    taskGraph.createTask('Shell', undefined, { type: 'pty', uri: `pty://${PTY_WS_URL}` });
+    // Panes created after user taps to start (via onInit from server)
   }
 
-  // Tap canvas to toggle voice
+  // Tap-to-start overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'start-overlay';
+  overlay.style.cssText = `
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; background: #050508;
+  `;
+  overlay.innerHTML = `
+    <div style="text-align:center; font: 18px/1.6 -apple-system, system-ui, sans-serif; color: rgba(255,255,255,0.6);">
+      <div style="font-size: 28px; color: rgba(255,255,255,0.9); margin-bottom: 12px;">crush</div>
+      <div>tap anywhere to start</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  let started = false;
+  const startOnTap = async () => {
+    if (started) return;
+    started = true;
+    overlay.style.opacity = '0';
+    overlay.style.transition = 'opacity 0.4s';
+    setTimeout(() => overlay.remove(), 500);
+
+    // Unlock audio playback with a silent buffer (user gesture required)
+    try {
+      const ctx = new AudioContext();
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start();
+      await ctx.close();
+    } catch (_) { /* ignore */ }
+
+    // Ask server for opening line (will trigger TTS)
+    voiceClient?.sendStartSignal();
+
+    // Start mic capture
+    try {
+      await voiceClient?.startConversation();
+    } catch (e) {
+      console.warn('[voice] Mic unavailable:', e);
+    }
+  };
+  overlay.addEventListener('click', startOnTap);
+
+  // After started, tap canvas to toggle voice
   renderer.domElement.addEventListener('click', () => {
+    if (!started) return;
     voiceClient?.toggleConversation();
   });
 
@@ -514,14 +559,9 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
 
 // --- Transcript ---
 
-function appendTranscript(line: string): void {
-  transcriptLines.push(line);
-  const text = transcriptLines.join('\n');
-  if (transcriptPane) {
-    transcriptPane.updateContent(text);
-    // Auto-scroll to bottom
-    transcriptPane.textTexture.scrollTo(transcriptPane.textTexture.maxScroll);
-  }
+function appendTranscript(_line: string): void {
+  // Transcript lives in the DOM overlay (transcriptEl), not a 3D pane.
+  // The onTranscript/onResponse callbacks handle display.
 }
 
 // --- Browser demo ---
@@ -595,8 +635,7 @@ function initVoice(): void {
 
   voiceClient = new VoiceClient({
     wsUrl: VOICE_WS_URL,
-    deepgramApiKey: params.get('dgkey') || 'REDACTED_DEEPGRAM_KEY',
-    elevenlabsApiKey: params.get('elkey') || 'REDACTED_ELEVENLABS_KEY',
+    // Credentials come from server init message — set below in onInit
     onTranscript(text, isFinal) {
       if (transcriptFadeTimer !== null) clearTimeout(transcriptFadeTimer);
       if (text && !isFinal) {
@@ -613,8 +652,10 @@ function initVoice(): void {
     },
     onResponse(text) {
       console.log('[voice] Response:', text);
-      if (text) {
-        appendTranscript(`Agent: ${text}\n`);
+      if (text && transcriptEl) {
+        transcriptEl.textContent = text;
+        transcriptEl.style.opacity = '1';
+        // Keep visible while speaking, fade handled by state change
       }
     },
     onStateChange(state) {
@@ -637,40 +678,21 @@ function initVoice(): void {
       appendTranscript(`  → ${cmd.name}`);
     },
     onInit(data) {
-      // Guard against duplicate panes on reconnect
-      const hasPane = (name: string) =>
-        [...taskPaneMap.values()].some(p => p.label === name);
+      // Apply voice credentials from server
+      if (data.voiceCredentials) {
+        voiceClient!.setCredentials(
+          data.voiceCredentials.deepgramApiKey,
+          data.voiceCredentials.elevenlabsApiKey,
+        );
+      }
 
-      if (data.todo && !hasPane('Todo')) {
-        const content = data.todo;
-        const resource: ResourceDescriptor = {
-          type: 'editor',
-          uri: `content://${encodeURIComponent(content)}`,
-        };
-        taskGraph.createTask('Todo', currentParentId ?? undefined, resource);
-      }
-      if (!hasPane('Transcript')) {
-        const txTask = taskGraph.createTask('Transcript', currentParentId ?? undefined, {
-          type: 'editor',
-          uri: `content://${encodeURIComponent('(listening...)')}`,
-        });
-        transcriptPane = taskPaneMap.get(txTask.id) as TextPane ?? null;
-      }
+      // Scene starts empty — panes created by agent via voice commands
     },
   });
 
   voiceClient.connect();
 
-  // Auto-start conversation mode — always listening
-  // Wait for server connection before starting mic
-  const autoStart = () => {
-    if (voiceClient!.isConnected) {
-      voiceClient!.startConversation();
-    } else {
-      setTimeout(autoStart, 500);
-    }
-  };
-  setTimeout(autoStart, 1000);
+  // Don't auto-start — wait for user gesture (tap to start)
 }
 
 function updateVoiceStatusText(state: string): void {
@@ -678,6 +700,12 @@ function updateVoiceStatusText(state: string): void {
   switch (state) {
     case 'idle':
       statusEl.style.opacity = '0';
+      // Fade transcript after a pause
+      if (transcriptEl) {
+        setTimeout(() => {
+          if (currentVoiceState === 'idle' && transcriptEl) transcriptEl.style.opacity = '0';
+        }, 4000);
+      }
       break;
     case 'listening':
       statusEl.textContent = 'listening';
