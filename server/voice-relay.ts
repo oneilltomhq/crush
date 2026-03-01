@@ -220,6 +220,8 @@ function buildSystemPrompt(): string {
 
 Keep responses SHORT — 1-3 sentences, conversational. No markdown, no bullet lists. Talk like a person.
 
+Focus on OUTCOMES, not tools. Never say "I can open a shell" or "I can browse the web" — instead, just DO the thing the user needs. If they say "I need to fix a bug in my server", open a shell and start looking. If they mention a URL, open it. Act on intent, don't narrate your capabilities.
+
 ## Workspace
 
 The workspace is a grid of panes:
@@ -354,8 +356,8 @@ async function processStart(conn: Connection): Promise<void> {
     const todo = readTodo();
     const hasTodo = todo && !todo.includes('No todo file found');
     const prompt = hasTodo
-      ? '[System: The user just opened Crush and tapped to start. They have an existing todo list. Greet them briefly, mention how many items, and offer to get started. 1-2 short sentences. Warm, not cheesy.]'
-      : '[System: The user just opened Crush for the first time. Introduce yourself in one breath — what you are, what you can do. You\'re a voice workspace: you can open shells, browse the web, manage tasks, all by talking. Keep it to 2-3 short sentences. Sound like a person, not a product tour.]';
+      ? '[System: The user just opened Crush and tapped to start. They have an existing todo list. Greet them briefly, mention how many items, and ask which one they want to tackle. One short sentence + one question. Warm, not cheesy.]'
+      : '[System: The user just opened Crush for the first time. Say hi in ONE short sentence, then ask what they\'re working on today. That\'s it. Do NOT list features or capabilities. Do NOT mention shells, browsers, or tools. Just ask what they want to accomplish. Example tone: "Hey, I\'m Crush. What are you working on?" End with a question they can answer in one breath.]';
     conn.history.push({ role: 'user', content: prompt });
 
     const response = await callLLM(systemPrompt, conn.history);
