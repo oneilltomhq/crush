@@ -17,7 +17,7 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    allowedHosts: ['valley-silver.exe.xyz'],
+    allowedHosts: true,  // allow any host (dev only)
     proxy: {
       '/ws/pty': {
         target: 'ws://localhost:8091',

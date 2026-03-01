@@ -27,16 +27,23 @@ import { AgentRunner, type RunnerStatus } from './agent-runner';
 // Config
 // ---------------------------------------------------------------------------
 
+function requireEnv(name: string): string {
+  const val = process.env[name];
+  if (!val) { console.error(`Missing required env var: ${name}`); process.exit(1); }
+  return val;
+}
+
 const CDP_HOST = process.env.CDP_HOST || 'localhost';
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222');
 
 // Voice credentials — server-side, sent to client in init
-const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || 'REDACTED_DEEPGRAM_KEY';
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || 'REDACTED_ELEVENLABS_KEY';
+const DEEPGRAM_API_KEY = requireEnv('DEEPGRAM_API_KEY');
+const ELEVENLABS_API_KEY = requireEnv('ELEVENLABS_API_KEY');
 
 const WS_PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === '--port') || '8092');
 
-const LLM_ENDPOINT = 'http://169.254.169.254/gateway/llm/anthropic/v1/messages';
+const LLM_ENDPOINT = process.env.LLM_ENDPOINT || 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const LLM_MODEL = 'claude-sonnet-4-20250514';
 const LLM_MAX_TOKENS = 1024;
 
@@ -345,6 +352,7 @@ async function callLLM(
     headers: {
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
+      ...(ANTHROPIC_API_KEY ? { 'x-api-key': ANTHROPIC_API_KEY } : {}),
     },
     body: JSON.stringify({
       model: LLM_MODEL,

@@ -20,7 +20,8 @@ const execFileAsync = promisify(execFile);
 // Config
 // ---------------------------------------------------------------------------
 
-const LLM_ENDPOINT = 'http://169.254.169.254/gateway/llm/anthropic/v1/messages';
+const LLM_ENDPOINT = process.env.LLM_ENDPOINT || 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const LLM_MODEL = 'claude-sonnet-4-20250514';
 const LLM_MAX_TOKENS = 4096;
 const SUB_RUNNER_MAX_ITERATIONS = 15;  // per sub-query
@@ -116,6 +117,7 @@ async function callLLM(
     headers: {
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
+      ...(ANTHROPIC_API_KEY ? { 'x-api-key': ANTHROPIC_API_KEY } : {}),
     },
     body: JSON.stringify(body),
   });
