@@ -605,7 +605,11 @@ function initVoice(): void {
       appendTranscript(`  → ${cmd.name}`);
     },
     onInit(data) {
-      if (data.todo) {
+      // Guard against duplicate panes on reconnect
+      const hasPane = (name: string) =>
+        [...taskPaneMap.values()].some(p => p.label === name);
+
+      if (data.todo && !hasPane('Todo')) {
         const content = data.todo;
         const resource: ResourceDescriptor = {
           type: 'editor',
@@ -613,12 +617,13 @@ function initVoice(): void {
         };
         taskGraph.createTask('Todo', currentParentId ?? undefined, resource);
       }
-      // Create transcript pane
-      const txTask = taskGraph.createTask('Transcript', currentParentId ?? undefined, {
-        type: 'editor',
-        uri: `content://${encodeURIComponent('(listening...)')}`,
-      });
-      transcriptPane = taskPaneMap.get(txTask.id) as TextPane ?? null;
+      if (!hasPane('Transcript')) {
+        const txTask = taskGraph.createTask('Transcript', currentParentId ?? undefined, {
+          type: 'editor',
+          uri: `content://${encodeURIComponent('(listening...)')}`,
+        });
+        transcriptPane = taskPaneMap.get(txTask.id) as TextPane ?? null;
+      }
     },
   });
 

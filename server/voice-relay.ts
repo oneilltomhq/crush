@@ -26,6 +26,9 @@ import os from 'os';
 // Config
 // ---------------------------------------------------------------------------
 
+const CDP_HOST = process.env.CDP_HOST || 'localhost';
+const CDP_PORT = parseInt(process.env.CDP_PORT || '9222');
+
 const WS_PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === '--port') || '8092');
 
 const LLM_ENDPOINT = 'http://169.254.169.254/gateway/llm/anthropic/v1/messages';
@@ -87,6 +90,17 @@ const TOOLS = [
     },
   },
   {
+    name: 'screenshot_pane',
+    description: 'Take a screenshot of a browser pane to see what is currently displayed. Use this to read page content, verify navigation worked, or answer questions about what\'s on screen.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        label: { type: 'string', description: 'Label of the browser pane to screenshot' },
+      },
+      required: ['label'],
+    },
+  },
+  {
     name: 'navigate_pane',
     description: 'Navigate a browser pane to a URL.',
     input_schema: {
@@ -141,6 +155,56 @@ interface Connection {
 }
 
 // ---------------------------------------------------------------------------
+// CDP screenshot — grab page screenshot directly from Chrome
+// ---------------------------------------------------------------------------
+
+import { WebSocket as WsClient } from 'ws';
+
+async function cdpScreenshot(): Promise<string | null> {
+  try {
+    // Find active page tab
+    const listRes = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
+    const tabs: any[] = await listRes.json();
+    const page = tabs.find((t: any) =>
+      t.type === 'page' &&
+      !t.url.startsWith('chrome://') &&
+      !t.url.startsWith('chrome-extension://') &&
+      !t.url.startsWith('devtools://')
+    );
+    if (!page?.webSocketDebuggerUrl) return null;
+
+    // Connect to CDP and capture screenshot
+    return await new Promise<string | null>((resolve) => {
+      const ws = new WsClient(page.webSocketDebuggerUrl);
+      const timeout = setTimeout(() => { ws.close(); resolve(null); }, 5000);
+      ws.on('open', () => {
+        ws.send(JSON.stringify({
+          id: 1,
+          method: 'Page.captureScreenshot',
+          params: { format: 'jpeg', quality: 70 },
+        }));
+      });
+      ws.on('message', (data: Buffer) => {
+        clearTimeout(timeout);
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.id === 1 && msg.result?.data) {
+            resolve(msg.result.data); // base64 JPEG
+          } else {
+            resolve(null);
+          }
+        } catch { resolve(null); }
+        ws.close();
+      });
+      ws.on('error', () => { clearTimeout(timeout); resolve(null); });
+    });
+  } catch (e: any) {
+    console.error('[voice] CDP screenshot error:', e.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Todo file
 // ---------------------------------------------------------------------------
 
@@ -169,11 +233,11 @@ Keep responses SHORT — 1-3 sentences, conversational. No markdown, no bullet l
 
 The workspace is a grid of panes:
 - PTY panes: real bash shell sessions
-- Browser panes: live browser tab streams
+- Browser panes: live browser tab with CDP screencast. Use screenshot_pane to see page content, navigate_pane to browse.
 - Text panes: scrollable text/markdown content
 - Task panes: labeled organizational cards
 
-On startup, two panes exist: "Shell" (PTY) and "Todo" (text, showing the todo list). Don't recreate these.
+On startup, three panes exist: "Shell" (PTY), "Todo" (text), and "Transcript" (conversation log). Don't recreate these.
 
 ## Rules
 
@@ -181,6 +245,7 @@ On startup, two panes exist: "Shell" (PTY) and "Todo" (text, showing the todo li
 - Never create empty shells speculatively.
 - One pane per clear user intent — don't over-create.
 - The workspace should stay clean and purposeful.
+- When browsing for the user, use screenshot_pane to see what's on the page, then describe what you see.
 
 ## Todo list
 
@@ -222,12 +287,12 @@ async function callLLM(
   return res.json() as Promise<ApiResponse>;
 }
 
-/** Execute a tool call. Returns the result string for the tool_result message. */
-function executeTool(
+/** Execute a tool call. Returns content for the tool_result message. */
+async function executeTool(
   name: string,
   input: Record<string, unknown>,
   conn: Connection,
-): string {
+): Promise<string | any[]> {
   switch (name) {
     case 'create_pane': {
       const paneType = String(input.pane_type);
@@ -246,6 +311,19 @@ function executeTool(
       const amount = String(input.amount || 'medium');
       send(conn.ws, { type: 'command', name: 'scroll_pane', input: { label, direction, amount } });
       return `Scrolled "${label}" ${direction} (${amount}).`;
+    }
+    case 'screenshot_pane': {
+      // Grab screenshot directly from Chrome via CDP
+      const b64 = await cdpScreenshot();
+      if (!b64) return 'Failed to capture screenshot — no browser tab available.';
+      console.log(`[voice] Screenshot captured (${Math.round(b64.length / 1024)}KB)`);
+      return [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: b64 },
+        },
+        { type: 'text', text: 'Screenshot of the current browser tab.' },
+      ];
     }
     case 'navigate_pane': {
       const label = String(input.label);
@@ -316,11 +394,11 @@ async function processText(conn: Connection, userText: string): Promise<void> {
       for (const block of response.content) {
         if (block.type === 'tool_use' && block.id && block.name && block.input) {
           console.log(`${tag} Tool: ${block.name}(${JSON.stringify(block.input)})`);
-          const result = executeTool(block.name, block.input, conn);
+          const result = await executeTool(block.name, block.input, conn);
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
-            content: result,
+            content: result, // string or array of content blocks
           } as any);
         }
       }
