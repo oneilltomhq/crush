@@ -9,7 +9,8 @@
  * Escape / back button returns to the parent level.
  *
  * Controls:
- *   A         — add a new task (auto-labeled)
+ *   A         — add a new task (auto-labeled, alternates terminal/plain)
+ *   B         — add a browser pane (live tab via CDP relay)
  *   S         — decompose focused task into subtasks
  *   D         — run demo sequence
  *   X         — complete focused task
@@ -22,6 +23,7 @@ import { TaskGraph, type TaskEvent, type TaskNode, type ResourceDescriptor } fro
 import { Ghostty } from 'ghostty-web';
 import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
 import { TerminalTexture } from './terminal-texture';
+import { BrowserTexture } from './browser-texture';
 
 // --- Dimensions ---
 const PANE_W = 48;
@@ -50,6 +52,10 @@ const taskPaneMap = new Map<string, Pane>();  // task ID → Pane
 let ghosttyInstance: Ghostty | null = null;
 // Terminal textures keyed by task ID
 const termTextures = new Map<string, TerminalTexture>();
+const browserTextures = new Map<string, BrowserTexture>();
+
+// CDP relay WebSocket URL — configurable via query param ?relay=ws://...
+const RELAY_WS_URL = new URLSearchParams(window.location.search).get('relay') || 'ws://localhost:8090';
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let focusedPane: Pane | null = null;
@@ -168,14 +174,20 @@ function addPaneForTask(task: TaskNode): void {
 
   if (task.resource?.type === 'terminal' && ghosttyInstance) {
     // Live terminal pane — render Ghostty to a canvas texture
-    // Reuse existing texture if we're re-adding after navigation
     let termTex = termTextures.get(task.id);
     if (!termTex) {
       termTex = new TerminalTexture(ghosttyInstance);
       termTextures.set(task.id, termTex);
     }
-
     mat = new THREE.MeshBasicNodeMaterial({ map: termTex.texture });
+  } else if (task.resource?.type === 'browser') {
+    // Live browser tab pane — screencast via CDP relay WebSocket
+    let browserTex = browserTextures.get(task.id);
+    if (!browserTex) {
+      browserTex = new BrowserTexture({ wsUrl: RELAY_WS_URL });
+      browserTextures.set(task.id, browserTex);
+    }
+    mat = new THREE.MeshBasicNodeMaterial({ map: browserTex.texture });
   } else {
     mat = new THREE.MeshBasicNodeMaterial({ color });
   }
@@ -183,8 +195,8 @@ function addPaneForTask(task: TaskNode): void {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.userData.taskId = task.id;
 
-  // Label overlay (only for non-terminal panes)
-  if (!task.resource || task.resource.type !== 'terminal') {
+  // Label overlay (only for non-resource panes)
+  if (!task.resource || (task.resource.type !== 'terminal' && task.resource.type !== 'browser')) {
     const labelMesh = makeLabel(task.label, idx + 1);
     labelMesh.position.set(0, 0, 0.1);
     mesh.add(labelMesh);
@@ -214,6 +226,13 @@ function removePaneForTask(taskId: string): void {
   if (termTex) {
     termTex.dispose();
     termTextures.delete(taskId);
+  }
+
+  // Clean up browser texture if any
+  const browserTex = browserTextures.get(taskId);
+  if (browserTex) {
+    browserTex.dispose();
+    browserTextures.delete(taskId);
   }
 
   scene.remove(pane.mesh);
@@ -478,6 +497,10 @@ function tick(_time: number): void {
   for (const termTex of termTextures.values()) {
     termTex.update(_time);
   }
+  // Update all live browser textures
+  for (const browserTex of browserTextures.values()) {
+    browserTex.update(_time);
+  }
 
   if (!animating) return;
   const elapsed = performance.now() - animStart;
@@ -581,6 +604,15 @@ function onKeyDown(event: KeyboardEvent): void {
     const resource = (autoLabelCounter % 2 === 0)
       ? { type: 'terminal' as const, uri: `wasm://ghostty/term/${label.toLowerCase().replace(/\s/g, '-')}` }
       : undefined;
+    taskGraph.createTask(label, currentParentId ?? undefined, resource);
+  } else if (key === 'b') {
+    // Create a browser pane (live tab via CDP relay)
+    event.preventDefault();
+    const label = 'Browser';
+    const resource: ResourceDescriptor = {
+      type: 'browser',
+      uri: `cdp://remote/tab/live`,
+    };
     taskGraph.createTask(label, currentParentId ?? undefined, resource);
   } else if (key === 's') {
     event.preventDefault();
@@ -733,7 +765,7 @@ function updateHUD(): void {
     parts.push(breadcrumb.join(' › '));
   }
 
-  const keys = ['A:add', 'S:split', 'D:demo', 'X:done', 'Click:focus/dive', 'Esc:back'];
+  const keys = ['A:add', 'B:browser', 'S:split', 'D:demo', 'X:done', 'Click:focus/dive', 'Esc:back'];
   hudEl.innerHTML = `${parts.join(' · ')}<br>${keys.join(' · ')}`;
 }
 
