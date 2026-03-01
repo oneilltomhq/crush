@@ -1,9 +1,21 @@
+/** What kind of surface a pane renders. */
+export type ResourceType = 'terminal' | 'browser' | 'agent' | 'editor' | 'group';
+
+/** Describes the resource backing a task pane. */
+export interface ResourceDescriptor {
+  type: ResourceType;
+  /** URI-like locator: wasm://ghostty/term/id, cdp://local/tab/id, pty://host/session/id */
+  uri: string;
+}
+
 export interface TaskNode {
   id: string;
   label: string;
   status: 'pending' | 'active' | 'complete';
   parentId: string | null;
   childIds: string[];
+  /** The resource this pane renders. Absent = label-only placeholder. */
+  resource?: ResourceDescriptor;
 }
 
 export type TaskEventType = 'created' | 'completed' | 'destroyed' | 'decomposed' | 'activated';
@@ -31,7 +43,7 @@ export class TaskGraph {
     }
   }
 
-  createTask(label: string, parentId?: string): TaskNode {
+  createTask(label: string, parentId?: string, resource?: ResourceDescriptor): TaskNode {
     const id = this.genId();
     const node: TaskNode = {
       id,
@@ -39,6 +51,7 @@ export class TaskGraph {
       status: 'pending',
       parentId: parentId ?? null,
       childIds: [],
+      ...(resource ? { resource } : {}),
     };
 
     if (parentId != null) {

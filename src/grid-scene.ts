@@ -18,7 +18,10 @@
  */
 
 import * as THREE from 'three/webgpu';
-import { TaskGraph, type TaskEvent, type TaskNode } from './task-graph';
+import { TaskGraph, type TaskEvent, type TaskNode, type ResourceDescriptor } from './task-graph';
+import { Ghostty } from 'ghostty-web';
+import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
+import { TerminalTexture } from './terminal-texture';
 
 // --- Dimensions ---
 const PANE_W = 48;
@@ -42,6 +45,11 @@ let camera: THREE.PerspectiveCamera;
 let container: HTMLElement;
 const panes: Pane[] = [];
 const taskPaneMap = new Map<string, Pane>();  // task ID → Pane
+
+// Ghostty instance (shared by all terminal panes)
+let ghosttyInstance: Ghostty | null = null;
+// Terminal textures keyed by task ID
+const termTextures = new Map<string, TerminalTexture>();
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let focusedPane: Pane | null = null;
@@ -92,11 +100,14 @@ async function init() {
     50, container.clientWidth / container.clientHeight, 0.1, 500
   );
 
+  // Load Ghostty WASM (needed for terminal panes)
+  ghosttyInstance = await Ghostty.load(ghosttyWasmUrl);
+
   // Subscribe to task graph events
   taskGraph.onChange(onTaskEvent);
 
-  // Start with one task
-  taskGraph.createTask('Agent');
+  // Start with one terminal pane
+  taskGraph.createTask('Agent', undefined, { type: 'terminal', uri: 'wasm://ghostty/term/agent' });
 
   // Events
   renderer.domElement.addEventListener('click', onClick);
@@ -153,14 +164,33 @@ function addPaneForTask(task: TaskNode): void {
 
   // Pane background
   const geo = new THREE.PlaneGeometry(PANE_W, PANE_H);
-  const mat = new THREE.MeshBasicNodeMaterial({ color });
+  let mat: THREE.MeshBasicNodeMaterial;
+
+  if (task.resource?.type === 'terminal' && ghosttyInstance) {
+    // Live terminal pane — render Ghostty to a canvas texture
+    // Reuse existing texture if we're re-adding after navigation
+    let termTex = termTextures.get(task.id);
+    if (!termTex) {
+      termTex = new TerminalTexture(ghosttyInstance);
+      termTextures.set(task.id, termTex);
+      // Boot a shell prompt
+      termTex.write('\x1b[1;36mcrush\x1b[0m \x1b[34m$\x1b[0m ');
+    }
+
+    mat = new THREE.MeshBasicNodeMaterial({ map: termTex.texture });
+  } else {
+    mat = new THREE.MeshBasicNodeMaterial({ color });
+  }
+
   const mesh = new THREE.Mesh(geo, mat);
   mesh.userData.taskId = task.id;
 
-  // Label texture
-  const labelMesh = makeLabel(task.label, idx + 1);
-  labelMesh.position.set(0, 0, 0.1);
-  mesh.add(labelMesh);
+  // Label overlay (only for non-terminal panes)
+  if (!task.resource || task.resource.type !== 'terminal') {
+    const labelMesh = makeLabel(task.label, idx + 1);
+    labelMesh.position.set(0, 0, 0.1);
+    mesh.add(labelMesh);
+  }
 
   // Border
   const border = makeBorder();
@@ -180,6 +210,13 @@ function removePaneForTask(taskId: string): void {
   if (!pane) return;
 
   if (focusedPane === pane) focusedPane = null;
+
+  // Clean up terminal texture if any
+  const termTex = termTextures.get(taskId);
+  if (termTex) {
+    termTex.dispose();
+    termTextures.delete(taskId);
+  }
 
   scene.remove(pane.mesh);
   scene.remove(pane.border);
@@ -304,6 +341,8 @@ function clearAllPanes(): void {
     pane.mesh.geometry.dispose();
     pane.border.geometry.dispose();
   }
+  // Don't dispose terminal textures — they persist across navigation
+  // so state is preserved when diving in/out
   panes.length = 0;
   taskPaneMap.clear();
 }
@@ -437,6 +476,11 @@ function easeInOutCubic(t: number): number {
 }
 
 function tick(_time: number): void {
+  // Update all live terminal textures
+  for (const termTex of termTextures.values()) {
+    termTex.update(_time);
+  }
+
   if (!animating) return;
   const elapsed = performance.now() - animStart;
   const t = Math.min(elapsed / FLY_MS, 1);
@@ -497,12 +541,42 @@ function handlePointer(clientX: number, clientY: number): void {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
+  // If a terminal pane is focused, route printable keys and special keys to it
+  if (focusedPane) {
+    const termTex = termTextures.get(focusedPane.taskId);
+    if (termTex && !event.metaKey) {
+      // Let grid hotkeys through only with Alt held
+      if (!event.altKey) {
+        // Route to terminal
+        if (event.key === 'Escape') {
+          // Escape always goes to grid navigation
+        } else if (event.key === 'Enter') {
+          event.preventDefault();
+          termTex.write('\r\n');
+          return;
+        } else if (event.key === 'Backspace') {
+          event.preventDefault();
+          termTex.write('\b \b');
+          return;
+        } else if (event.key.length === 1) {
+          event.preventDefault();
+          termTex.write(event.key);
+          return;
+        }
+      }
+    }
+  }
+
   const key = event.key.toLowerCase();
   if (key === 'a') {
     event.preventDefault();
     const label = AUTO_LABELS[autoLabelCounter % AUTO_LABELS.length];
     autoLabelCounter++;
-    taskGraph.createTask(label, currentParentId ?? undefined);
+    // Alternate: every other pane is a terminal
+    const resource = (autoLabelCounter % 2 === 0)
+      ? { type: 'terminal' as const, uri: `wasm://ghostty/term/${label.toLowerCase().replace(/\s/g, '-')}` }
+      : undefined;
+    taskGraph.createTask(label, currentParentId ?? undefined, resource);
   } else if (key === 's') {
     event.preventDefault();
     if (focusedPane) {
@@ -544,46 +618,55 @@ async function runDemoSequence(): Promise<void> {
   if (demoRunning) return;
   demoRunning = true;
 
-  // Step 1: Create tasks at root
-  taskGraph.createTask('API server');
+  // Step 1: Create a mix of resource types at root
+  const buildTask = taskGraph.createTask('Build server', undefined,
+    { type: 'terminal', uri: 'wasm://ghostty/term/build' });
   await delay(600);
-  const auth = taskGraph.createTask('Auth service');
+
+  taskGraph.createTask('Browser tests', undefined,
+    { type: 'browser', uri: 'cdp://local/tab/tests' });
   await delay(600);
-  taskGraph.createTask('Frontend');
+
+  const deployTask = taskGraph.createTask('Deploy pipeline');
   await delay(800);
 
-  // Step 2: Focus Auth, then decompose it
-  const authPane = taskPaneMap.get(auth.id);
-  if (authPane) zoomTo(authPane);
-  await delay(800);
-
-  taskGraph.decompose(auth.id, ['OAuth flow', 'Session store', 'Rate limiter']);
-  await delay(800);
-
-  // Step 3: Dive into Auth to see children
-  diveInto(auth.id);
-  await delay(1200);
-
-  // Step 4: Focus a child, decompose it further
-  const oauthTask = taskGraph.getChildren(auth.id)[0];
-  if (oauthTask) {
-    const oauthPane = taskPaneMap.get(oauthTask.id);
-    if (oauthPane) zoomTo(oauthPane);
-    await delay(800);
-
-    taskGraph.decompose(oauthTask.id, ['Google provider', 'GitHub provider', 'Token refresh']);
-    await delay(800);
-
-    // Dive deeper
-    diveInto(oauthTask.id);
-    await delay(1200);
+  // Step 2: Simulate shell activity in the terminal pane
+  const buildTex = termTextures.get(buildTask.id);
+  if (buildTex) {
+    buildTex.write('\x1b[1;32m$\x1b[0m npm run build\r\n');
+    await delay(400);
+    buildTex.write('\x1b[90mCompiling TypeScript...\x1b[0m\r\n');
+    await delay(300);
+    buildTex.write('\x1b[90mbundling src/main.ts \u2192 dist/main.js\x1b[0m\r\n');
+    await delay(300);
+    buildTex.write('\x1b[32m\u2713 Build complete\x1b[0m (1.2s)\r\n');
+    await delay(200);
+    buildTex.write('\r\n\x1b[1;32m$\x1b[0m ');
   }
 
-  // Step 5: Navigate back up through levels
-  await delay(1000);
-  navigateUp();  // back to Auth's children
-  await delay(1000);
-  navigateUp();  // back to root
+  // Step 3: Focus the build terminal
+  const buildPane = taskPaneMap.get(buildTask.id);
+  if (buildPane) zoomTo(buildPane);
+  await delay(1500);
+
+  // Step 4: Zoom out, focus Deploy, decompose it
+  zoomOut();
+  await delay(800);
+
+  const deployPane = taskPaneMap.get(deployTask.id);
+  if (deployPane) zoomTo(deployPane);
+  await delay(600);
+
+  taskGraph.decompose(deployTask.id, ['Stage', 'Smoke test', 'Promote']);
+  await delay(800);
+
+  // Step 5: Dive into Deploy children
+  diveInto(deployTask.id);
+  await delay(1200);
+
+  // Step 6: Navigate back to root
+  await delay(800);
+  navigateUp();
   await delay(500);
 
   demoRunning = false;
