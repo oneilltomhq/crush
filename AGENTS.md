@@ -26,6 +26,10 @@ When making an architectural decision that selects one direction at the exclusio
 - **Lifecycle:** `proposed` → `accepted` → optionally `superseded by ADR-NNN`
 - Reversed decisions stay in the repo marked as superseded — the history matters.
 
+### No fake demos
+
+Mocks and stubs are fine in **tests** that prove real behavior. Mocks and stubs used to make a **demo look impressive** are absolutely verboten. If a feature can't be shown working for real, show the gap honestly — don't paper over it with scripted output or puppet-string animations. Every visible behavior must be driven by real code paths.
+
 ### Code
 
 - Application code lives in `crush/`. Do not modify `vendor/` unless applying/updating upstream patches.
