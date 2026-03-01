@@ -25,6 +25,7 @@ import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
 import { TerminalTexture } from './terminal-texture';
 import { PtyTexture } from './pty-texture';
 import { BrowserTexture } from './browser-texture';
+import { VoiceClient } from './voice-client';
 
 // --- Dimensions ---
 const PANE_W = 48;
@@ -60,6 +61,7 @@ const browserTextures = new Map<string, BrowserTexture>();
 const params = new URLSearchParams(window.location.search);
 const RELAY_WS_URL = params.get('relay') || 'ws://localhost:8090';
 const PTY_WS_URL = params.get('pty') || 'ws://localhost:8091';
+const VOICE_WS_URL = params.get('voice') || 'ws://localhost:8092';
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let focusedPane: Pane | null = null;
@@ -71,6 +73,9 @@ const navStack: (string | null)[] = [];  // previous parent IDs for back navigat
 
 // Task graph
 const taskGraph = new TaskGraph();
+// Voice client
+let voiceClient: VoiceClient | null = null;
+
 let autoLabelCounter = 0;
 const AUTO_LABELS = [
   'Agent', 'To-do list', 'API server', 'Database',
@@ -124,6 +129,9 @@ async function init() {
   renderer.domElement.addEventListener('touchend', onTouch);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('resize', onResize);
+
+  // Voice
+  initVoice();
 
   // HUD
   updateHUD();
@@ -797,6 +805,156 @@ function updateHUD(): void {
 
   const keys = ['P:shell', 'A:add', 'B:browser', 'S:split', 'D:demo', 'X:done', 'Click:focus/dive', 'Esc:back'];
   hudEl.innerHTML = `${parts.join(' · ')}<br>${keys.join(' · ')}`;
+}
+
+// --- Voice ---
+
+let voiceOverlay: HTMLElement | null = null;
+let micBtn: HTMLElement | null = null;
+let transcriptEl: HTMLElement | null = null;
+let statusEl: HTMLElement | null = null;
+
+function initVoice(): void {
+  // Create voice UI overlay
+  voiceOverlay = document.createElement('div');
+  voiceOverlay.style.cssText = `
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 20; display: flex; flex-direction: column; align-items: center; gap: 8px;
+    pointer-events: none;
+  `;
+
+  // Transcript bubble
+  transcriptEl = document.createElement('div');
+  transcriptEl.style.cssText = `
+    background: rgba(0,0,0,0.75); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 16px;
+    padding: 8px 16px; font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    color: rgba(255,255,255,0.8); max-width: 500px; text-align: center;
+    opacity: 0; transition: opacity 0.2s; pointer-events: none;
+  `;
+  voiceOverlay.appendChild(transcriptEl);
+
+  // Status pill
+  statusEl = document.createElement('div');
+  statusEl.style.cssText = `
+    background: rgba(0,0,0,0.65); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 4px 12px; font: 11px -apple-system, system-ui, sans-serif;
+    color: rgba(255,255,255,0.5); opacity: 0; transition: opacity 0.2s;
+    pointer-events: none;
+  `;
+  voiceOverlay.appendChild(statusEl);
+
+  // Mic button
+  micBtn = document.createElement('button');
+  micBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+    <line x1="12" y1="19" x2="12" y2="23"/>
+    <line x1="8" y1="23" x2="16" y2="23"/>
+  </svg>`;
+  micBtn.style.cssText = `
+    pointer-events: auto; width: 56px; height: 56px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(8px); color: rgba(255,255,255,0.6); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s; -webkit-tap-highlight-color: transparent;
+  `;
+  voiceOverlay.appendChild(micBtn);
+
+  // Connection dot
+  const connDot = document.createElement('div');
+  connDot.id = 'voice-conn';
+  connDot.style.cssText = `
+    position: fixed; top: 12px; right: 12px; width: 8px; height: 8px;
+    border-radius: 50%; background: #ff4466; z-index: 20; transition: background 0.3s;
+  `;
+  document.body.appendChild(connDot);
+  document.body.appendChild(voiceOverlay);
+
+  // Voice client
+  let transcriptFadeTimer: number | null = null;
+
+  voiceClient = new VoiceClient({
+    wsUrl: VOICE_WS_URL,
+    onTranscript(text, isFinal) {
+      if (transcriptFadeTimer !== null) clearTimeout(transcriptFadeTimer);
+      if (text && !isFinal) {
+        transcriptEl!.textContent = text;
+        transcriptEl!.style.opacity = '1';
+      } else {
+        transcriptFadeTimer = window.setTimeout(() => {
+          transcriptEl!.style.opacity = '0';
+        }, 500);
+      }
+    },
+    onResponse(text) {
+      statusEl!.style.opacity = '0';
+      console.log('[voice] Response:', text);
+    },
+    onThinking() {
+      statusEl!.textContent = 'Thinking...';
+      statusEl!.style.opacity = '1';
+    },
+    onSpeaking(playing) {
+      if (playing) {
+        statusEl!.textContent = '\u266A Speaking';
+        statusEl!.style.opacity = '1';
+      } else {
+        statusEl!.style.opacity = '0';
+      }
+    },
+    onError(message) {
+      console.error('[voice] Error:', message);
+      statusEl!.textContent = '\u26a0 ' + message;
+      statusEl!.style.opacity = '1';
+      setTimeout(() => { statusEl!.style.opacity = '0'; }, 3000);
+    },
+    onConnected(connected) {
+      connDot.style.background = connected ? '#44ff88' : '#ff4466';
+    },
+  });
+
+  voiceClient.connect();
+
+  // Hold-to-talk events
+  micBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); voiceClient!.startRecording(); setMicRecording(true); });
+  micBtn.addEventListener('mouseup', () => { voiceClient!.stopRecording(); setMicRecording(false); });
+  micBtn.addEventListener('mouseleave', () => { if (voiceClient!.isRecording) { voiceClient!.stopRecording(); setMicRecording(false); } });
+  micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); voiceClient!.startRecording(); setMicRecording(true); });
+  micBtn.addEventListener('touchend', (e) => { e.preventDefault(); voiceClient!.stopRecording(); setMicRecording(false); });
+  micBtn.addEventListener('touchcancel', () => { voiceClient!.stopRecording(); setMicRecording(false); });
+
+  // Spacebar hold-to-talk (when no terminal focused)
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !focusedPane && !e.repeat) {
+      e.preventDefault();
+      voiceClient!.startRecording();
+      setMicRecording(true);
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space' && voiceClient!.isRecording) {
+      e.preventDefault();
+      voiceClient!.stopRecording();
+      setMicRecording(false);
+    }
+  });
+}
+
+function setMicRecording(recording: boolean): void {
+  if (!micBtn) return;
+  if (recording) {
+    micBtn.style.background = '#ff4466';
+    micBtn.style.borderColor = '#ff4466';
+    micBtn.style.color = 'white';
+    micBtn.style.boxShadow = '0 0 20px rgba(255,68,102,0.4)';
+  } else {
+    micBtn.style.background = 'rgba(0,0,0,0.5)';
+    micBtn.style.borderColor = 'rgba(255,255,255,0.15)';
+    micBtn.style.color = 'rgba(255,255,255,0.6)';
+    micBtn.style.boxShadow = 'none';
+  }
 }
 
 // --- Go ---
