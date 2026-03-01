@@ -52,6 +52,8 @@ export interface ProgramContext {
   args: string[];
   /** The underlying terminal (for advanced use: resize, mode queries) */
   term: GhosttyTerminal;
+  /** Abort signal for interrupting the program (Ctrl+C) */
+  abortSignal: AbortSignal;
 }
 
 /** A program that can run inside the crush shell */

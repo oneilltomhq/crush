@@ -28,6 +28,9 @@ export class LocalShell {
   /** When set, a foreground program is running and keystrokes go to its stdin */
   private fgStdin: StdinStream | null = null;
 
+  /** AbortController for the currently running foreground program */
+  private fgAbortController: AbortController | null = null;
+
   constructor(opts: LocalShellOptions) {
     this.term = opts.term;
     this.commands = { ...BUILTIN_COMMANDS, ...opts.commands };
@@ -80,10 +83,17 @@ export class LocalShell {
         this.term.write('\b \b');
       }
     } else if (code === 0x03) {
-      // Ctrl+C — cancel line
-      this.term.write('^C\r\n');
-      this.lineBuf = '';
-      this.writePrompt();
+      // Ctrl+C — cancel line OR abort foreground program
+      if (this.fgStdin && this.fgAbortController) {
+        // Abort the running program
+        this.fgAbortController.abort();
+        this.term.write('^C\r\n');
+      } else {
+        // Cancel line input
+        this.term.write('^C\r\n');
+        this.lineBuf = '';
+        this.writePrompt();
+      }
     } else if (code === 0x04) {
       // Ctrl+D on empty line — no-op
       if (this.lineBuf.length === 0) {
@@ -124,26 +134,36 @@ export class LocalShell {
   /** Launch a program in the foreground */
   private runProgram(program: CrushProgram, args: string[]): void {
     const stdin = new StdinStream();
+    const abortController = new AbortController();
     this.fgStdin = stdin;
+    this.fgAbortController = abortController;
 
     const ctx = {
       stdout: (data: string) => this.term.write(data),
       stdin,
       args,
       term: this.term,
+      abortSignal: abortController.signal,
     };
 
     program
       .run(ctx)
       .then(() => {
         this.fgStdin = null;
+        this.fgAbortController = null;
         stdin.close();
         this.writePrompt();
       })
       .catch((err) => {
         this.fgStdin = null;
+        this.fgAbortController = null;
         stdin.close();
-        this.term.write(`\x1b[31mcrush: program error:\x1b[0m ${err}\r\n`);
+        // Don't show error if program was aborted
+        if (err?.name === 'AbortError') {
+          this.term.write('\r\n');
+        } else {
+          this.term.write(`\x1b[31mcrush: program error:\x1b[0m ${err}\r\n`);
+        }
         this.writePrompt();
       });
   }
