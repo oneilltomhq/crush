@@ -16,6 +16,7 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    allowedHosts: ['valley-silver.exe.xyz'],
   },
   assetsInclude: ['**/*.wasm'],
   publicDir: false,
