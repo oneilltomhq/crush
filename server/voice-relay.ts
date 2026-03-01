@@ -38,7 +38,7 @@ const WS_PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === '--port') |
 
 const LLM_ENDPOINT = 'http://169.254.169.254/gateway/llm/anthropic/v1/messages';
 const LLM_MODEL = 'claude-sonnet-4-20250514';
-const LLM_MAX_TOKENS = 1024;
+const LLM_MAX_TOKENS = 4096;
 
 const TODO_PATH = path.join(os.homedir(), '.openclaw', 'workspace', 'todo.md');
 
@@ -48,8 +48,50 @@ const TODO_PATH = path.join(os.homedir(), '.openclaw', 'workspace', 'todo.md');
 
 const TOOLS = [
   {
+    name: 'shell',
+    description: `Run a shell command on the server and return its output. You have full access to the system — use it to inspect files, check processes, run builds, install packages, git operations, anything. The working directory is the Crush project root (/home/exedev/crush). Commands time out after 30 seconds.
+
+Examples:
+- ls -la src/
+- cat server/voice-relay.ts
+- git log --oneline -10
+- tmux capture-pane -t voice -p | tail -20
+- ps aux | grep node
+- npm run build`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        command: { type: 'string', description: 'The bash command to execute' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'read_file',
+    description: 'Read the contents of a file. More convenient than shell cat for reading code/config.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Path to the file (absolute or relative to /home/exedev/crush)' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Write content to a file. Creates parent directories if needed.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Path to write to' },
+        content: { type: 'string', description: 'File content' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
     name: 'create_pane',
-    description: 'Create a new pane in the workspace. Only when the user explicitly requests it.',
+    description: 'Create a new pane in the workspace.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -242,35 +284,50 @@ function writeTodo(content: string): void {
 
 function buildSystemPrompt(): string {
   const todo = readTodo();
-  return `You are the voice assistant for Crush, a spatial workspace rendered in 3D. The user talks to you; you talk back and manage their workspace using tools.
+  return `You are Crush — a voice-driven coding agent with full system access. You run on a Linux server and can do anything: run shell commands, read/write files, browse the web, manage a 3D spatial workspace. You are an experienced software engineer.
 
-Keep responses SHORT — 1-3 sentences, conversational. No markdown, no bullet lists. Talk like a person.
+You communicate by voice. The user speaks to you and you speak back. Your text responses are converted to speech via TTS.
 
-Focus on OUTCOMES, not tools. Never say "I can open a shell" or "I can browse the web" — instead, just DO the thing the user needs. If they say "I need to fix a bug in my server", open a shell and start looking. If they mention a URL, open it. Act on intent, don't narrate your capabilities.
+## Voice output rules
+
+- Keep responses concise — 1-4 sentences for simple things, longer when explaining something substantive.
+- No markdown formatting in your spoken responses (no asterisks, no bullet syntax, no headers). Just talk.
+- When you need to show structured content (code, lists, research), put it in a text pane and tell the user to look at it.
+- Be direct. Don't narrate what you're about to do — just do it, then report what you found/did.
+- Don't be fluffy or overly enthusiastic. Be warm but real, like a colleague.
+
+## Capabilities
+
+You have the same power as any coding agent:
+- shell: Run any bash command. Inspect files, processes, logs, git, builds, anything.
+- read_file / write_file: Read and write files directly.
+- browse: Control a browser tab via CDP (open URLs, read pages, click, type).
+- create_pane: Show things in the 3D workspace (shells, browser tabs, text content).
+- research: Delegate deep multi-page web research to a background agent.
+
+When the user asks a question about the system, CHECK THE ACTUAL STATE. Read the files, check the logs, inspect the processes. Don't guess.
 
 ## Workspace
 
-The workspace is a grid of panes:
+The user sees a 3D grid of panes. You control what's in it:
 - PTY panes: real bash shell sessions
-- Browser panes: live browser tab with CDP screencast. Use the browse tool to interact with the page.
+- Browser panes: live browser tab with CDP screencast
 - Text panes: scrollable text/markdown content
 - Task panes: labeled organizational cards
 
-The workspace starts empty. Create panes only when the user asks or when it's clearly useful (e.g. user asks to work on code → open a shell).
+Create panes when useful. Don't over-create. The workspace should stay clean.
 
-## Rules
+## Project context
 
-- Only create panes when the user explicitly asks.
-- Never create empty shells speculatively.
-- One pane per clear user intent — don't over-create.
-- The workspace should stay clean and purposeful.
-- When browsing, use browse tool: "open <url>" to navigate, "snapshot -i" to see interactive elements, "click @ref" to interact, "snapshot" for full page content. Always snapshot after navigating to see what loaded.
-- For research tasks (finding information, investigating topics, comparing options), use the research tool — it launches a background agent that does thorough multi-page research autonomously. Don't try to research by hand with browse — delegate to the researcher.
-- You can check on research with research_status.
+You are running inside the Crush project (/home/exedev/crush) — a Chrome extension + 3D spatial workspace. Key paths:
+- src/ — client-side TypeScript (Three.js renderer, panes, voice client)
+- server/ — server-side (this voice relay, agent runner, PTY relay)
+- vendor/ — Ghostty WASM, ghostty-web
+- adr/ — architecture decision records
+
+You can read any of these files to answer questions about the system.
 
 ## Todo list
-
-Current contents:
 
 ${todo}
 
@@ -315,6 +372,49 @@ async function executeTool(
   conn: Connection,
 ): Promise<string | any[]> {
   switch (name) {
+    case 'shell': {
+      const command = String(input.command);
+      console.log(`[voice:${conn.id}] shell: ${command.substring(0, 100)}`);
+      try {
+        const { stdout, stderr } = await execFileAsync(
+          'bash', ['-c', command],
+          { timeout: 30000, maxBuffer: 2 * 1024 * 1024, cwd: '/home/exedev/crush' },
+        );
+        const output = (stdout + (stderr ? `\nSTDERR: ${stderr}` : '')).trim();
+        const maxLen = 12000;
+        return output.length > maxLen
+          ? output.substring(0, maxLen) + `\n... (truncated, ${output.length - maxLen} chars omitted)`
+          : output || '(no output)';
+      } catch (e: any) {
+        const output = ((e.stdout || '') + (e.stderr || '')).trim();
+        return output || `Error (exit ${e.code}): ${e.message}`;
+      }
+    }
+    case 'read_file': {
+      const filePath = String(input.path);
+      const absPath = path.isAbsolute(filePath) ? filePath : path.join('/home/exedev/crush', filePath);
+      try {
+        const content = fs.readFileSync(absPath, 'utf-8');
+        const maxLen = 12000;
+        return content.length > maxLen
+          ? content.substring(0, maxLen) + `\n... (truncated, ${content.length - maxLen} chars omitted)`
+          : content;
+      } catch (e: any) {
+        return `Error reading ${absPath}: ${e.message}`;
+      }
+    }
+    case 'write_file': {
+      const filePath = String(input.path);
+      const content = String(input.content);
+      const absPath = path.isAbsolute(filePath) ? filePath : path.join('/home/exedev/crush', filePath);
+      try {
+        fs.mkdirSync(path.dirname(absPath), { recursive: true });
+        fs.writeFileSync(absPath, content, 'utf-8');
+        return `Wrote ${content.length} bytes to ${absPath}`;
+      } catch (e: any) {
+        return `Error writing ${absPath}: ${e.message}`;
+      }
+    }
     case 'create_pane': {
       const paneType = String(input.pane_type);
       const label = String(input.label);
@@ -392,7 +492,8 @@ async function executeTool(
       }
       const statuses = conn.runners.map(r => {
         const s = r.getStatus();
-        return `"${s.goal.substring(0, 50)}" — ${s.state}, ${s.iterations}/${s.maxIterations} iterations, ${s.currentActivity}`;
+        const subs = s.subQueries.map(sq => `  - ${sq.query.substring(0, 40)}: ${sq.state}`).join('\n');
+        return `"${s.goal.substring(0, 50)}" — ${s.state}\n${subs}`;
       });
       return statuses.join('\n');
     }
@@ -478,7 +579,7 @@ async function processText(conn: Connection, userText: string): Promise<void> {
     // Tool use loop: keep calling until stop_reason is 'end_turn'
     let spokenParts: string[] = [];
     let iterations = 0;
-    const MAX_ITERATIONS = 5;  // safety limit
+    const MAX_ITERATIONS = 15;  // safety limit
 
     while (iterations < MAX_ITERATIONS) {
       iterations++;
