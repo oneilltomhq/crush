@@ -1,5 +1,5 @@
 /** What kind of surface a pane renders. */
-export type ResourceType = 'terminal' | 'browser' | 'agent' | 'editor' | 'group';
+export type ResourceType = 'terminal' | 'pty' | 'browser' | 'agent' | 'editor' | 'group';
 
 /** Describes the resource backing a task pane. */
 export interface ResourceDescriptor {

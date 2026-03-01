@@ -23,6 +23,7 @@ import { TaskGraph, type TaskEvent, type TaskNode, type ResourceDescriptor } fro
 import { Ghostty } from 'ghostty-web';
 import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
 import { TerminalTexture } from './terminal-texture';
+import { PtyTexture } from './pty-texture';
 import { BrowserTexture } from './browser-texture';
 
 // --- Dimensions ---
@@ -52,10 +53,13 @@ const taskPaneMap = new Map<string, Pane>();  // task ID → Pane
 let ghosttyInstance: Ghostty | null = null;
 // Terminal textures keyed by task ID
 const termTextures = new Map<string, TerminalTexture>();
+const ptyTextures = new Map<string, PtyTexture>();
 const browserTextures = new Map<string, BrowserTexture>();
 
-// CDP relay WebSocket URL — configurable via query param ?relay=ws://...
-const RELAY_WS_URL = new URLSearchParams(window.location.search).get('relay') || 'ws://localhost:8090';
+// WebSocket URLs — configurable via query params
+const params = new URLSearchParams(window.location.search);
+const RELAY_WS_URL = params.get('relay') || 'ws://localhost:8090';
+const PTY_WS_URL = params.get('pty') || 'ws://localhost:8091';
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let focusedPane: Pane | null = null;
@@ -112,8 +116,8 @@ async function init() {
   // Subscribe to task graph events
   taskGraph.onChange(onTaskEvent);
 
-  // Start with one terminal pane
-  taskGraph.createTask('Agent', undefined, { type: 'terminal', uri: 'wasm://ghostty/term/agent' });
+  // Start with one PTY pane (real shell on the server)
+  taskGraph.createTask('Shell', undefined, { type: 'pty', uri: `pty://${PTY_WS_URL}` });
 
   // Events
   renderer.domElement.addEventListener('click', onClick);
@@ -172,8 +176,16 @@ function addPaneForTask(task: TaskNode): void {
   const geo = new THREE.PlaneGeometry(PANE_W, PANE_H);
   let mat: THREE.MeshBasicNodeMaterial;
 
-  if (task.resource?.type === 'terminal' && ghosttyInstance) {
-    // Live terminal pane — render Ghostty to a canvas texture
+  if (task.resource?.type === 'pty' && ghosttyInstance) {
+    // Remote PTY pane — real shell via WebSocket
+    let ptyTex = ptyTextures.get(task.id);
+    if (!ptyTex) {
+      ptyTex = new PtyTexture(ghosttyInstance, PTY_WS_URL);
+      ptyTextures.set(task.id, ptyTex);
+    }
+    mat = new THREE.MeshBasicNodeMaterial({ map: ptyTex.texture });
+  } else if (task.resource?.type === 'terminal' && ghosttyInstance) {
+    // Local terminal pane — Ghostty WASM + LocalShell
     let termTex = termTextures.get(task.id);
     if (!termTex) {
       termTex = new TerminalTexture(ghosttyInstance);
@@ -196,7 +208,7 @@ function addPaneForTask(task: TaskNode): void {
   mesh.userData.taskId = task.id;
 
   // Label overlay (only for non-resource panes)
-  if (!task.resource || (task.resource.type !== 'terminal' && task.resource.type !== 'browser')) {
+  if (!task.resource || (task.resource.type !== 'terminal' && task.resource.type !== 'pty' && task.resource.type !== 'browser')) {
     const labelMesh = makeLabel(task.label, idx + 1);
     labelMesh.position.set(0, 0, 0.1);
     mesh.add(labelMesh);
@@ -221,19 +233,15 @@ function removePaneForTask(taskId: string): void {
 
   if (focusedPane === pane) focusedPane = null;
 
-  // Clean up terminal texture if any
+  // Clean up textures
   const termTex = termTextures.get(taskId);
-  if (termTex) {
-    termTex.dispose();
-    termTextures.delete(taskId);
-  }
+  if (termTex) { termTex.dispose(); termTextures.delete(taskId); }
 
-  // Clean up browser texture if any
+  const ptyTex = ptyTextures.get(taskId);
+  if (ptyTex) { ptyTex.dispose(); ptyTextures.delete(taskId); }
+
   const browserTex = browserTextures.get(taskId);
-  if (browserTex) {
-    browserTex.dispose();
-    browserTextures.delete(taskId);
-  }
+  if (browserTex) { browserTex.dispose(); browserTextures.delete(taskId); }
 
   scene.remove(pane.mesh);
   scene.remove(pane.border);
@@ -493,14 +501,10 @@ function easeInOutCubic(t: number): number {
 }
 
 function tick(_time: number): void {
-  // Update all live terminal textures
-  for (const termTex of termTextures.values()) {
-    termTex.update(_time);
-  }
-  // Update all live browser textures
-  for (const browserTex of browserTextures.values()) {
-    browserTex.update(_time);
-  }
+  // Update all live textures
+  for (const termTex of termTextures.values()) termTex.update(_time);
+  for (const ptyTex of ptyTextures.values()) ptyTex.update(_time);
+  for (const browserTex of browserTextures.values()) browserTex.update(_time);
 
   if (!animating) return;
   const elapsed = performance.now() - animStart;
@@ -562,33 +566,53 @@ function handlePointer(clientX: number, clientY: number): void {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
-  // If a terminal pane is focused, route input to the real shell
+  // If a terminal/pty pane is focused, route input to the shell
   if (focusedPane) {
     const termTex = termTextures.get(focusedPane.taskId);
-    if (termTex && !event.metaKey) {
-      // Let grid hotkeys through only with Alt held
+    const ptyTex = ptyTextures.get(focusedPane.taskId);
+    const activeTex = ptyTex || termTex;  // prefer pty if both exist (shouldn't)
+    if (activeTex && !event.metaKey) {
       if (!event.altKey) {
         if (event.key === 'Escape') {
           // Escape always goes to grid navigation
         } else if (event.key === 'Enter') {
           event.preventDefault();
-          termTex.feed('\r');
+          activeTex.feed('\r');
           return;
         } else if (event.key === 'Backspace') {
           event.preventDefault();
-          termTex.feed('\x7f');
+          activeTex.feed('\x7f');
+          return;
+        } else if (event.key === 'Tab') {
+          event.preventDefault();
+          activeTex.feed('\t');
+          return;
+        } else if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          activeTex.feed('\x1b[A');
+          return;
+        } else if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          activeTex.feed('\x1b[B');
+          return;
+        } else if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          activeTex.feed('\x1b[C');
+          return;
+        } else if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          activeTex.feed('\x1b[D');
           return;
         } else if (event.key.length === 1 && event.ctrlKey) {
-          // Ctrl+C, Ctrl+D, Ctrl+L etc.
           event.preventDefault();
           const code = event.key.toLowerCase().charCodeAt(0) - 96;
           if (code > 0 && code < 32) {
-            termTex.feed(String.fromCharCode(code));
+            activeTex.feed(String.fromCharCode(code));
           }
           return;
         } else if (event.key.length === 1) {
           event.preventDefault();
-          termTex.feed(event.key);
+          activeTex.feed(event.key);
           return;
         }
       }
@@ -604,6 +628,12 @@ function onKeyDown(event: KeyboardEvent): void {
     const resource = (autoLabelCounter % 2 === 0)
       ? { type: 'terminal' as const, uri: `wasm://ghostty/term/${label.toLowerCase().replace(/\s/g, '-')}` }
       : undefined;
+    taskGraph.createTask(label, currentParentId ?? undefined, resource);
+  } else if (key === 'p') {
+    // Create a PTY pane (real shell via WebSocket)
+    event.preventDefault();
+    const label = `Shell ${autoLabelCounter++}`;
+    const resource: ResourceDescriptor = { type: 'pty', uri: `pty://${PTY_WS_URL}` };
     taskGraph.createTask(label, currentParentId ?? undefined, resource);
   } else if (key === 'b') {
     // Create a browser pane (live tab via CDP relay)
@@ -765,7 +795,7 @@ function updateHUD(): void {
     parts.push(breadcrumb.join(' › '));
   }
 
-  const keys = ['A:add', 'B:browser', 'S:split', 'D:demo', 'X:done', 'Click:focus/dive', 'Esc:back'];
+  const keys = ['P:shell', 'A:add', 'B:browser', 'S:split', 'D:demo', 'X:done', 'Click:focus/dive', 'Esc:back'];
   hudEl.innerHTML = `${parts.join(' · ')}<br>${keys.join(' · ')}`;
 }
 
