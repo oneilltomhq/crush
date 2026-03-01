@@ -13,7 +13,7 @@ import type { Ghostty } from 'ghostty-web';
 export const PANE_W = 48;
 export const PANE_H = 24;
 
-const DEFAULT_BORDER_COLOR = 0x333355;
+export const DEFAULT_BORDER_COLOR = 0x333355;
 
 function makeBorder(): THREE.LineSegments {
   const hw = PANE_W / 2, hh = PANE_H / 2;
@@ -37,6 +37,11 @@ export abstract class Pane {
   readonly label: string;
   readonly mesh: THREE.Mesh;
   readonly border: THREE.LineSegments;
+
+  // Flash state for agent-presence border glow
+  _flashColor: THREE.Color | null = null;
+  _flashStart = 0;
+  _flashDuration = 0;
 
   constructor(taskId: string, label: string, material: THREE.MeshBasicNodeMaterial) {
     this.taskId = taskId;
@@ -62,6 +67,18 @@ export abstract class Pane {
 
   /** Set border color (focus, active, complete effects). */
   setBorderColor(color: number): void {
+    (this.border.material as THREE.LineBasicNodeMaterial).color.set(color);
+  }
+
+  /**
+   * Flash the border with a color that lerps back to DEFAULT_BORDER_COLOR.
+   * Used as an agent-presence indicator when the LLM acts on a pane.
+   */
+  flash(color: number, durationMs: number): void {
+    this._flashColor = new THREE.Color(color);
+    this._flashStart = performance.now();
+    this._flashDuration = durationMs;
+    // Immediately set to flash color
     (this.border.material as THREE.LineBasicNodeMaterial).color.set(color);
   }
 

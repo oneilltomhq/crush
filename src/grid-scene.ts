@@ -15,13 +15,18 @@ import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url';
 import { VoiceClient } from './voice-client';
 import {
   Pane, PtyPane, BrowserPane, TextPane, TerminalPane, PlainPane,
-  PANE_W, PANE_H,
+  PANE_W, PANE_H, DEFAULT_BORDER_COLOR,
 } from './pane';
 
 // --- Dimensions ---
 const GAP = 4;
 const FLY_MS = 400;
 const DEPTH_Z = -(PANE_H + GAP) * 1.5;
+
+// --- Agent-presence flash ---
+const FLASH_COLOR = 0xffaa44;   // warm gold/amber
+const FLASH_DURATION = 800;     // ms
+const _defaultBorderColor = new THREE.Color(DEFAULT_BORDER_COLOR);
 
 // --- State ---
 let renderer: THREE.WebGPURenderer;
@@ -65,6 +70,8 @@ type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking';
 let currentVoiceState: VoiceState = 'idle';
 
 // Scene atmosphere colors
+// Set to false to disable voice-state background color shifts
+const ENABLE_ATMOSPHERE = true;
 const ATMOSPHERE = {
   idle:       { bg: 0x050508, border: 0x333355, glow: 0x000000 },
   listening:  { bg: 0x0a0508, border: 0x664455, glow: 0xff4466 },
@@ -303,9 +310,37 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
+function tickFlashes(): void {
+  const now = performance.now();
+  for (const pane of panes) {
+    if (!pane._flashColor) continue;
+    const elapsed = now - pane._flashStart;
+    if (elapsed >= pane._flashDuration) {
+      // Flash complete — reset to default
+      (pane.border.material as THREE.LineBasicNodeMaterial).color.copy(_defaultBorderColor);
+      pane._flashColor = null;
+    } else {
+      // Lerp from flash color back to default
+      const t = elapsed / pane._flashDuration;
+      (pane.border.material as THREE.LineBasicNodeMaterial).color
+        .copy(pane._flashColor)
+        .lerp(_defaultBorderColor, t);
+    }
+  }
+}
+
+/** Flash a pane border to indicate agent action. */
+function flashPane(taskId: string): void {
+  const pane = taskPaneMap.get(taskId);
+  if (pane) pane.flash(FLASH_COLOR, FLASH_DURATION);
+}
+
 function tick(time: number): void {
   // Update all pane textures
   for (const pane of panes) pane.update(time);
+
+  // Tick active border flashes (agent-presence glow)
+  tickFlashes();
 
   // Update scene atmosphere based on voice state
   updateAtmosphere();
@@ -328,6 +363,8 @@ function tick(time: number): void {
 // --- Scene Atmosphere ---
 
 function updateAtmosphere(): void {
+  if (!ENABLE_ATMOSPHERE) return;
+
   const atm = ATMOSPHERE[currentVoiceState];
   const bg = scene.background as THREE.Color;
   const targetBg = new THREE.Color(atm.bg);
@@ -374,7 +411,8 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
         // 'task' — no resource, plain pane
       }
 
-      taskGraph.createTask(label, currentParentId ?? undefined, resource);
+      const newTask = taskGraph.createTask(label, currentParentId ?? undefined, resource);
+      flashPane(newTask.id);
       console.log(`[cmd] create_pane: ${paneType} "${label}"`);
       break;
     }
@@ -414,6 +452,7 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
         if (amount === 'top') targetPane.textTexture.scrollTo(0);
         else if (amount === 'bottom') targetPane.textTexture.scrollTo(targetPane.textTexture.maxScroll);
         else targetPane.scroll(dy);
+        flashPane(targetPane.taskId);
         console.log(`[cmd] scroll_pane: "${targetPane.label}" ${direction} ${amount}`);
       } else {
         console.warn(`[cmd] scroll_pane: no text pane matching "${label}"`);
@@ -427,6 +466,7 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
       for (const [, pane] of taskPaneMap) {
         if (pane.label.toLowerCase().includes('todo') && pane instanceof TextPane) {
           pane.updateContent(content);
+          flashPane(pane.taskId);
           console.log('[cmd] update_todo: refreshed pane');
           break;
         }
