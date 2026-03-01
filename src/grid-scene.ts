@@ -106,8 +106,14 @@ async function init() {
   // Subscribe to task graph events
   taskGraph.onChange(onTaskEvent);
 
-  // Start with one PTY pane
-  taskGraph.createTask('Shell', undefined, { type: 'pty', uri: `pty://${PTY_WS_URL}` });
+  // Demo mode: ?demo=browser shows a single browser pane cycling through sites
+  const demoMode = params.get('demo');
+  if (demoMode === 'browser') {
+    runBrowserDemo();
+  } else {
+    // Start with one PTY pane
+    taskGraph.createTask('Shell', undefined, { type: 'pty', uri: `pty://${PTY_WS_URL}` });
+  }
 
   // Tap canvas to toggle voice
   renderer.domElement.addEventListener('click', () => {
@@ -116,8 +122,8 @@ async function init() {
 
   window.addEventListener('resize', onResize);
 
-  // Voice
-  initVoice();
+  // Voice (skip in demo mode)
+  if (!demoMode) initVoice();
 
   renderer.setAnimationLoop((time) => {
     tick(time);
@@ -516,6 +522,32 @@ function appendTranscript(line: string): void {
     // Auto-scroll to bottom
     transcriptPane.textTexture.scrollTo(transcriptPane.textTexture.maxScroll);
   }
+}
+
+// --- Browser demo ---
+
+function runBrowserDemo(): void {
+  const task = taskGraph.createTask('Browse', undefined, { type: 'browser', uri: 'cdp://remote/tab/live' });
+  const bp = taskPaneMap.get(task.id);
+  if (!(bp instanceof BrowserPane)) return;
+
+  const sites = [
+    'https://news.ycombinator.com',
+    'https://en.wikipedia.org/wiki/WebGPU',
+    'https://github.com/nicokoenig/threejs-blocks',
+  ];
+
+  // Navigate to first site once connected, then cycle
+  let idx = 0;
+  const next = () => {
+    bp.browserTexture.navigate(sites[idx % sites.length]);
+    flashPane(task.id);
+    idx++;
+  };
+
+  // Wait for WS connection then start cycling
+  setTimeout(next, 2000);
+  setInterval(next, 8000);
 }
 
 // --- Voice ---

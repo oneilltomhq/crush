@@ -6,6 +6,7 @@ export default defineConfig({
     outDir: 'dist',
     rollupOptions: {
       input: {
+        grid: resolve(__dirname, 'grid.html'),
         sidepanel: resolve(__dirname, 'sidepanel.html'),
         background: resolve(__dirname, 'src/background.ts'),
       },
