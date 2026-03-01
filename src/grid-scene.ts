@@ -880,6 +880,8 @@ function initVoice(): void {
 
   voiceClient = new VoiceClient({
     wsUrl: VOICE_WS_URL,
+    deepgramApiKey: params.get('dgkey') || 'REDACTED_DEEPGRAM_KEY',
+    elevenlabsApiKey: params.get('elkey') || 'REDACTED_ELEVENLABS_KEY',
     onTranscript(text, isFinal) {
       if (transcriptFadeTimer !== null) clearTimeout(transcriptFadeTimer);
       if (text && !isFinal) {
