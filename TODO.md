@@ -35,9 +35,14 @@ Each task requires a **Findings** entry on completion: the answer, outcome, or c
   Task: Research only — check Chrome platform status, extension context restrictions, and spec compatibility. No code needed.
   Findings: _pending_
 
-- [ ] **#9 — Tab capture → WebGPU texture stress test**
+- [x] **#9 — Tab capture → WebGPU texture (basic pipeline proven)**
   Question: How many simultaneous live tab streams can we render as 3D panes before performance degrades?
   Task: Minimal PoC pipeline — `tabCapture` → `<video>` → `<canvas>` → `GPUExternalTexture`. Measure FPS/latency at 1, 2, 3, 4 simultaneous streams.
+  Findings: Pipeline proven via CDP `Page.startScreencast` → WebSocket relay → `BrowserTexture` (JPEG decode → Canvas2D → `THREE.CanvasTexture`). Single stream works cleanly at ~5-10 fps screencast rate. Used server-side relay (`server/cdp-relay.ts`) instead of `chrome.tabCapture` — works from any web page, not just extension context. Multi-stream stress test still pending (need #9b).
+
+- [ ] **#9b — Multi-stream stress test**
+  Question: How many simultaneous CDP screencast streams can we relay before performance degrades?
+  Task: Extend cdp-relay to support multiple tabs. Measure at 2, 4, 8 simultaneous streams.
   Findings: _pending_
 
 - [x] **#1 — libghostty-vt separability (confirmed — see surface.md)**
