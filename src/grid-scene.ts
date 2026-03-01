@@ -173,8 +173,6 @@ function addPaneForTask(task: TaskNode): void {
     if (!termTex) {
       termTex = new TerminalTexture(ghosttyInstance);
       termTextures.set(task.id, termTex);
-      // Boot a shell prompt
-      termTex.write('\x1b[1;36mcrush\x1b[0m \x1b[34m$\x1b[0m ');
     }
 
     mat = new THREE.MeshBasicNodeMaterial({ map: termTex.texture });
@@ -541,26 +539,33 @@ function handlePointer(clientX: number, clientY: number): void {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
-  // If a terminal pane is focused, route printable keys and special keys to it
+  // If a terminal pane is focused, route input to the real shell
   if (focusedPane) {
     const termTex = termTextures.get(focusedPane.taskId);
     if (termTex && !event.metaKey) {
       // Let grid hotkeys through only with Alt held
       if (!event.altKey) {
-        // Route to terminal
         if (event.key === 'Escape') {
           // Escape always goes to grid navigation
         } else if (event.key === 'Enter') {
           event.preventDefault();
-          termTex.write('\r\n');
+          termTex.feed('\r');
           return;
         } else if (event.key === 'Backspace') {
           event.preventDefault();
-          termTex.write('\b \b');
+          termTex.feed('\x7f');
+          return;
+        } else if (event.key.length === 1 && event.ctrlKey) {
+          // Ctrl+C, Ctrl+D, Ctrl+L etc.
+          event.preventDefault();
+          const code = event.key.toLowerCase().charCodeAt(0) - 96;
+          if (code > 0 && code < 32) {
+            termTex.feed(String.fromCharCode(code));
+          }
           return;
         } else if (event.key.length === 1) {
           event.preventDefault();
-          termTex.write(event.key);
+          termTex.feed(event.key);
           return;
         }
       }
@@ -618,56 +623,32 @@ async function runDemoSequence(): Promise<void> {
   if (demoRunning) return;
   demoRunning = true;
 
-  // Step 1: Create a mix of resource types at root
-  const buildTask = taskGraph.createTask('Build server', undefined,
+  // Create a mix of resource types
+  taskGraph.createTask('Build', undefined,
     { type: 'terminal', uri: 'wasm://ghostty/term/build' });
+  await delay(500);
+
+  const deployTask = taskGraph.createTask('Deploy');
+  await delay(500);
+
+  taskGraph.createTask('Tests', undefined,
+    { type: 'terminal', uri: 'wasm://ghostty/term/tests' });
+  await delay(500);
+
+  // Decompose Deploy into children, dive in, come back
+  taskGraph.decompose(deployTask.id, ['Stage', 'Smoke test', 'Promote']);
   await delay(600);
-
-  taskGraph.createTask('Browser tests', undefined,
-    { type: 'browser', uri: 'cdp://local/tab/tests' });
-  await delay(600);
-
-  const deployTask = taskGraph.createTask('Deploy pipeline');
-  await delay(800);
-
-  // Step 2: Simulate shell activity in the terminal pane
-  const buildTex = termTextures.get(buildTask.id);
-  if (buildTex) {
-    buildTex.write('\x1b[1;32m$\x1b[0m npm run build\r\n');
-    await delay(400);
-    buildTex.write('\x1b[90mCompiling TypeScript...\x1b[0m\r\n');
-    await delay(300);
-    buildTex.write('\x1b[90mbundling src/main.ts \u2192 dist/main.js\x1b[0m\r\n');
-    await delay(300);
-    buildTex.write('\x1b[32m\u2713 Build complete\x1b[0m (1.2s)\r\n');
-    await delay(200);
-    buildTex.write('\r\n\x1b[1;32m$\x1b[0m ');
-  }
-
-  // Step 3: Focus the build terminal
-  const buildPane = taskPaneMap.get(buildTask.id);
-  if (buildPane) zoomTo(buildPane);
-  await delay(1500);
-
-  // Step 4: Zoom out, focus Deploy, decompose it
-  zoomOut();
-  await delay(800);
 
   const deployPane = taskPaneMap.get(deployTask.id);
   if (deployPane) zoomTo(deployPane);
-  await delay(600);
-
-  taskGraph.decompose(deployTask.id, ['Stage', 'Smoke test', 'Promote']);
   await delay(800);
 
-  // Step 5: Dive into Deploy children
   diveInto(deployTask.id);
-  await delay(1200);
+  await delay(1500);
 
-  // Step 6: Navigate back to root
-  await delay(800);
   navigateUp();
   await delay(500);
+  zoomOut();
 
   demoRunning = false;
 }

@@ -2,12 +2,14 @@
  * TerminalTexture — a Ghostty terminal that renders to a Canvas2D,
  * exposed as a THREE.CanvasTexture for use as a pane surface.
  *
- * Each instance owns its own Ghostty terminal, offscreen canvas,
- * and update loop. The texture auto-updates when the terminal is dirty.
+ * Each instance owns a real LocalShell with command dispatch, line
+ * editing, and Ctrl+C support. The shell writes to the Ghostty VT,
+ * which drives the canvas rendering.
  */
 
 import * as THREE from 'three/webgpu';
-import type { Ghostty, GhosttyTerminal, KeyEncoder } from 'ghostty-web';
+import type { Ghostty, GhosttyTerminal } from 'ghostty-web';
+import { LocalShell } from './shell';
 
 const COLS = 80;
 const ROWS = 24;
@@ -18,19 +20,19 @@ const CANVAS_H = ROWS * CELL_H;   // 384
 
 export class TerminalTexture {
   readonly term: GhosttyTerminal;
+  readonly shell: LocalShell;
   readonly texture: THREE.CanvasTexture;
   readonly canvas: HTMLCanvasElement;
-  readonly encoder: KeyEncoder;
   private ctx: CanvasRenderingContext2D;
   private disposed = false;
-
-  // Cursor state
-  private cursorVisible = true;
   private cursorBlinkPhase = 0;
 
   constructor(ghostty: Ghostty) {
     this.term = ghostty.createTerminal(COLS, ROWS);
-    this.encoder = ghostty.createKeyEncoder();
+
+    // Real shell with real commands
+    this.shell = new LocalShell({ term: this.term });
+    this.shell.start();
 
     this.canvas = document.createElement('canvas');
     this.canvas.width = CANVAS_W;
@@ -46,9 +48,9 @@ export class TerminalTexture {
     this.renderToCanvas();
   }
 
-  /** Write data to the terminal (e.g. shell output). */
-  write(data: string): void {
-    this.term.write(data);
+  /** Feed raw input (keyboard data) into the shell. */
+  feed(data: string): void {
+    this.shell.feed(data);
   }
 
   /** Call every frame to update the texture if the terminal is dirty. */
