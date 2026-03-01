@@ -47,6 +47,10 @@ const RELAY_WS_URL = params.get('relay') || `${wsBase}/ws/cdp`;
 const PTY_WS_URL = params.get('pty') || `${wsBase}/ws/pty`;
 const VOICE_WS_URL = params.get('voice') || `${wsBase}/ws/voice`;
 
+// Transcript pane
+let transcriptLines: string[] = [];
+let transcriptPane: TextPane | null = null;
+
 // Depth navigation
 let currentParentId: string | null = null;
 const navStack: (string | null)[] = [];
@@ -479,6 +483,18 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
   }
 }
 
+// --- Transcript ---
+
+function appendTranscript(line: string): void {
+  transcriptLines.push(line);
+  const text = transcriptLines.join('\n');
+  if (transcriptPane) {
+    transcriptPane.updateContent(text);
+    // Auto-scroll to bottom
+    transcriptPane.textTexture.scrollTo(transcriptPane.textTexture.maxScroll);
+  }
+}
+
 // --- Voice ---
 
 let transcriptEl: HTMLElement | null = null;
@@ -536,9 +552,15 @@ function initVoice(): void {
           transcriptEl!.style.opacity = '0';
         }, 800);
       }
+      if (isFinal && text) {
+        appendTranscript(`You: ${text}`);
+      }
     },
     onResponse(text) {
       console.log('[voice] Response:', text);
+      if (text) {
+        appendTranscript(`Agent: ${text}\n`);
+      }
     },
     onStateChange(state) {
       currentVoiceState = state as VoiceState;
@@ -557,6 +579,7 @@ function initVoice(): void {
     },
     onCommand(cmd) {
       handleCommand(cmd);
+      appendTranscript(`  → ${cmd.name}`);
     },
     onInit(data) {
       if (data.todo) {
@@ -567,6 +590,12 @@ function initVoice(): void {
         };
         taskGraph.createTask('Todo', currentParentId ?? undefined, resource);
       }
+      // Create transcript pane
+      const txTask = taskGraph.createTask('Transcript', currentParentId ?? undefined, {
+        type: 'editor',
+        uri: `content://${encodeURIComponent('(listening...)')}`,
+      });
+      transcriptPane = taskPaneMap.get(txTask.id) as TextPane ?? null;
     },
   });
 
