@@ -185,8 +185,9 @@ function addPaneForTask(task: TaskNode): void {
   const idx = panes.length;
   const color = COLORS[idx % COLORS.length];
 
-  // Pane background
-  const geo = new THREE.PlaneGeometry(PANE_W, PANE_H);
+  // Pane dimensions — may be overridden for content-sized panes
+  let paneW = PANE_W;
+  let paneH = PANE_H;
   let mat: THREE.MeshBasicNodeMaterial;
 
   if (task.resource?.type === 'pty' && ghosttyInstance) {
@@ -223,11 +224,15 @@ function addPaneForTask(task: TaskNode): void {
       textTex = new TextTexture({ content, title: task.label });
       textTextures.set(task.id, textTex);
     }
+    // Size pane to match canvas aspect ratio (content-driven height)
+    const aspect = textTex.canvas.width / textTex.canvas.height;
+    paneH = paneW / aspect;
     mat = new THREE.MeshBasicNodeMaterial({ map: textTex.texture });
   } else {
     mat = new THREE.MeshBasicNodeMaterial({ color });
   }
 
+  const geo = new THREE.PlaneGeometry(paneW, paneH);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.userData.taskId = task.id;
 
