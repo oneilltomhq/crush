@@ -557,7 +557,7 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
       const content = String(input.content || '');
       for (const [, pane] of taskPaneMap) {
         if (pane.label.toLowerCase().includes(label.toLowerCase()) && pane instanceof TextPane) {
-          pane.updateContent(content);
+          pane.updateContent(content, true);  // auto-scroll to bottom on research updates
           flashPane(pane.taskId);
           console.log(`[cmd] update_text_pane: "${pane.label}" (${content.length} chars)`);
           break;

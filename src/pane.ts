@@ -172,8 +172,8 @@ export class TextPane extends Pane {
     this.textTexture.scroll(dy);
   }
 
-  updateContent(content: string): void {
-    this.textTexture.updateContent(content);
+  updateContent(content: string, autoScrollToBottom = false): void {
+    this.textTexture.updateContent(content, autoScrollToBottom);
   }
 }
 

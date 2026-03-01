@@ -79,7 +79,7 @@ const TOOLS = [
   },
   {
     name: 'scroll_pane',
-    description: 'Scroll a text pane.',
+    description: 'Scroll a text pane up or down. Use when the user wants to see more content, read further, or go back to the top. You can call this multiple times to keep scrolling.',
     input_schema: {
       type: 'object' as const,
       properties: {

@@ -102,10 +102,14 @@ export class TextTexture {
 
   // ── Public API ────────────────────────────────────────────────────
 
-  updateContent(content: string): void {
+  updateContent(content: string, autoScrollToBottom = false): void {
     this.content = content;
     this.renderFull();
-    this._scrollY = Math.min(this._scrollY, this.maxScroll);
+    if (autoScrollToBottom) {
+      this._scrollY = this.maxScroll;
+    } else {
+      this._scrollY = Math.min(this._scrollY, this.maxScroll);
+    }
     this.blit();
     this.texture.needsUpdate = true;
   }
