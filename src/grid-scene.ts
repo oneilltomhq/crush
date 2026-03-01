@@ -1,18 +1,19 @@
 /**
- * Spatial model prototype.
+ * Spatial model — task-driven pane grid.
  *
- * Dynamic pane grid in a Three.js WebGPU scene.
- * Panes are added/removed at runtime. Layout adapts.
- * Camera flies between overview and focused pane.
+ * Panes are created/removed/updated in response to TaskGraph events.
+ * The grid scene subscribes to onChange and reflects visible tasks as panes.
  *
  * Controls:
- *   Space     — add a pane
- *   Backspace — remove last pane
+ *   A         — add a new task (auto-labeled)
+ *   D         — run demo sequence
+ *   X         — complete focused task
  *   Click     — focus a pane (click again or Escape to zoom out)
  *   Escape    — zoom to overview
  */
 
 import * as THREE from 'three/webgpu';
+import { TaskGraph, type TaskEvent, type TaskNode } from './task-graph';
 
 // --- Dimensions ---
 const PANE_W = 48;
@@ -25,6 +26,7 @@ interface Pane {
   mesh: THREE.Mesh;
   border: THREE.LineSegments;
   label: string;
+  taskId: string;
 }
 
 // --- State ---
@@ -33,9 +35,19 @@ let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
 let container: HTMLElement;
 const panes: Pane[] = [];
+const taskPaneMap = new Map<string, Pane>();  // task ID → Pane
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let focusedPane: Pane | null = null;
+
+// Task graph
+const taskGraph = new TaskGraph();
+let autoLabelCounter = 0;
+const AUTO_LABELS = [
+  'Agent', 'To-do list', 'API server', 'Database',
+  'Tests', 'Deploy', 'Docs', 'Monitoring',
+  'Auth service', 'Frontend', 'CI/CD', 'Logs',
+];
 
 // Camera animation
 let animating = false;
@@ -45,13 +57,6 @@ const animTo = new THREE.Vector3();
 const lookFrom = new THREE.Vector3();
 const lookTo = new THREE.Vector3();
 const _tmpLook = new THREE.Vector3();
-
-// --- Pane labels ---
-const LABELS = [
-  'Agent', 'To-do list', 'API server', 'Database',
-  'Tests', 'Deploy', 'Docs', 'Monitoring',
-  'Auth service', 'Frontend', 'CI/CD', 'Logs',
-];
 
 const COLORS = [
   0x1e1e3a, 0x1a2a3e, 0x0f3460, 0x1b1b2f,
@@ -76,8 +81,11 @@ async function init() {
     50, container.clientWidth / container.clientHeight, 0.1, 500
   );
 
-  // Start with one pane
-  addPane();
+  // Subscribe to task graph events
+  taskGraph.onChange(onTaskEvent);
+
+  // Start with one task
+  taskGraph.createTask('Agent');
 
   // Events
   renderer.domElement.addEventListener('click', onClick);
@@ -94,21 +102,54 @@ async function init() {
   });
 }
 
-// --- Pane CRUD ---
+// --- Task → Pane bridge ---
 
-function addPane(): void {
+function onTaskEvent(event: TaskEvent): void {
+  switch (event.type) {
+    case 'created': {
+      const task = taskGraph.getTask(event.taskId);
+      if (!task) break;
+      // Only add panes for root-level (visible) tasks
+      if (task.parentId === null) {
+        addPaneForTask(task);
+      }
+      break;
+    }
+    case 'destroyed': {
+      removePaneForTask(event.taskId);
+      break;
+    }
+    case 'completed': {
+      flashPaneComplete(event.taskId);
+      break;
+    }
+    case 'decomposed': {
+      // Parent pane stays visible. Children are "behind" it conceptually.
+      // TODO: depth rendering — show child panes stacked behind parent
+      // For now the parent pane remains and children don't get their own top-level panes
+      // (they're sub-tasks, not root-visible).
+      updateHUD();
+      break;
+    }
+    case 'activated': {
+      highlightPaneActive(event.taskId);
+      break;
+    }
+  }
+}
+
+function addPaneForTask(task: TaskNode): void {
   const idx = panes.length;
-  const label = LABELS[idx % LABELS.length];
   const color = COLORS[idx % COLORS.length];
 
   // Pane background
   const geo = new THREE.PlaneGeometry(PANE_W, PANE_H);
   const mat = new THREE.MeshBasicNodeMaterial({ color });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.userData.paneIndex = idx;
+  mesh.userData.taskId = task.id;
 
   // Label texture
-  const labelMesh = makeLabel(label, idx + 1);
+  const labelMesh = makeLabel(task.label, idx + 1);
   labelMesh.position.set(0, 0, 0.1);
   mesh.add(labelMesh);
 
@@ -118,22 +159,56 @@ function addPane(): void {
   scene.add(mesh);
   scene.add(border);
 
-  panes.push({ mesh, border, label });
+  const pane: Pane = { mesh, border, label: task.label, taskId: task.id };
+  panes.push(pane);
+  taskPaneMap.set(task.id, pane);
   relayout();
   updateHUD();
 }
 
-function removePane(): void {
-  if (panes.length === 0) return;
-  if (focusedPane === panes[panes.length - 1]) focusedPane = null;
+function removePaneForTask(taskId: string): void {
+  const pane = taskPaneMap.get(taskId);
+  if (!pane) return;
 
-  const pane = panes.pop()!;
+  if (focusedPane === pane) focusedPane = null;
+
   scene.remove(pane.mesh);
   scene.remove(pane.border);
   pane.mesh.geometry.dispose();
   pane.border.geometry.dispose();
 
+  const idx = panes.indexOf(pane);
+  if (idx !== -1) panes.splice(idx, 1);
+  taskPaneMap.delete(taskId);
+
   relayout();
+  updateHUD();
+}
+
+function flashPaneComplete(taskId: string): void {
+  const pane = taskPaneMap.get(taskId);
+  if (!pane) return;
+
+  // Flash green
+  const mat = pane.mesh.material as THREE.MeshBasicNodeMaterial;
+  const borderMat = pane.border.material as THREE.LineBasicNodeMaterial;
+  mat.color.set(0x1a4a1a);
+  borderMat.color.set(0x33aa55);
+
+  // Revert border color after a short delay, then remove after longer delay
+  setTimeout(() => {
+    borderMat.color.set(0x333355);
+  }, 600);
+
+  updateHUD();
+}
+
+function highlightPaneActive(taskId: string): void {
+  const pane = taskPaneMap.get(taskId);
+  if (!pane) return;
+
+  const borderMat = pane.border.material as THREE.LineBasicNodeMaterial;
+  borderMat.color.set(0x5577ff);
   updateHUD();
 }
 
@@ -145,7 +220,6 @@ function gridSize(n: number): [number, number] {
   if (n === 2) return [2, 1];
   const aspect = container.clientWidth / container.clientHeight;
   const paneAspect = (PANE_W + GAP) / (PANE_H + GAP);
-  // Find cols that best matches screen aspect
   let bestCols = 1;
   let bestScore = Infinity;
   for (let c = 1; c <= n; c++) {
@@ -172,7 +246,6 @@ function relayout(): void {
   for (let i = 0; i < n; i++) {
     const col = i % cols;
     const row = Math.floor(i / cols);
-    // Center the grid at origin
     const x = (col - (cols - 1) / 2) * (PANE_W + GAP);
     const y = ((rows - 1) / 2 - row) * (PANE_H + GAP);
     panes[i].mesh.position.set(x, y, 0);
@@ -225,7 +298,6 @@ function zoomTo(pane: Pane): void {
   const target = new THREE.Vector3(pane.mesh.position.x, pane.mesh.position.y, 0);
   animateTo(pos, target);
 
-  // Dim unfocused panes
   for (const p of panes) {
     const m = p.mesh.material as THREE.MeshBasicNodeMaterial;
     m.opacity = p === pane ? 1.0 : 0.15;
@@ -256,7 +328,6 @@ function zoomOut(): void {
 function animateTo(pos: THREE.Vector3, lookAt: THREE.Vector3): void {
   animFrom.copy(camera.position);
   animTo.copy(pos);
-  // Current lookAt: project forward from camera
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   lookFrom.copy(camera.position).add(dir.multiplyScalar(100));
@@ -324,15 +395,66 @@ function handlePointer(clientX: number, clientY: number): void {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
-  if (event.key === ' ') {
+  const key = event.key.toLowerCase();
+  if (key === 'a') {
     event.preventDefault();
-    addPane();
-  } else if (event.key === 'Backspace') {
+    const label = AUTO_LABELS[autoLabelCounter % AUTO_LABELS.length];
+    autoLabelCounter++;
+    taskGraph.createTask(label);
+  } else if (key === 'x') {
     event.preventDefault();
-    removePane();
+    if (focusedPane) {
+      const taskId = focusedPane.taskId;
+      taskGraph.completeAndDestroy(taskId);
+    }
+  } else if (key === 'd') {
+    event.preventDefault();
+    runDemoSequence();
   } else if (event.key === 'Escape') {
     if (focusedPane) zoomOut();
   }
+}
+
+// --- Demo sequence ---
+let demoRunning = false;
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function runDemoSequence(): Promise<void> {
+  if (demoRunning) return;
+  demoRunning = true;
+
+  // Step 1: Create "To-do list" task
+  const todo = taskGraph.createTask('To-do list');
+  await delay(800);
+
+  // Step 2: Activate it
+  taskGraph.activate(todo.id);
+  await delay(600);
+
+  // Step 3: Decompose into 3 subtasks
+  const subs = taskGraph.decompose(todo.id, ['Design UI', 'Build API', 'Write tests']);
+  await delay(1000);
+
+  // Step 4: Create a separate root task to show grid growth
+  taskGraph.createTask('Deploy');
+  await delay(800);
+
+  // Step 5: Complete one subtask
+  taskGraph.complete(subs[0].id);
+  await delay(1000);
+
+  // Step 6: Complete the parent (to-do list) with flash
+  taskGraph.complete(todo.id);
+  await delay(1500);
+
+  // Step 7: Destroy the completed parent (removes its pane)
+  taskGraph.destroy(todo.id);
+  await delay(500);
+
+  demoRunning = false;
 }
 
 function onResize(): void {
@@ -391,7 +513,20 @@ function updateHUD(): void {
     hudEl.style.cssText = 'position:fixed;top:12px;left:12px;color:rgba(255,255,255,0.4);font:13px monospace;pointer-events:none;z-index:10;line-height:1.6';
     document.body.appendChild(hudEl);
   }
-  hudEl.textContent = `${panes.length} pane${panes.length !== 1 ? 's' : ''} · Space: add · Backspace: remove · Click: focus · Esc: overview`;
+
+  const visible = taskGraph.getVisibleTasks();
+  const pending = visible.filter(t => t.status === 'pending').length;
+  const active = visible.filter(t => t.status === 'active').length;
+  const complete = visible.filter(t => t.status === 'complete').length;
+
+  const parts: string[] = [`${panes.length} pane${panes.length !== 1 ? 's' : ''}`];
+  const statParts: string[] = [];
+  if (pending) statParts.push(`${pending} pending`);
+  if (active) statParts.push(`${active} active`);
+  if (complete) statParts.push(`${complete} done`);
+  if (statParts.length) parts.push(statParts.join(', '));
+
+  hudEl.innerHTML = `${parts.join(' · ')}<br>A: add · D: demo · X: complete focused · Click: focus · Esc: overview`;
 }
 
 // --- Go ---
