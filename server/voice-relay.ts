@@ -1,20 +1,20 @@
 /**
  * Voice WebSocket Relay — port 8092
  *
- * Pure text LLM bridge. STT and TTS are client-side (ADR 005).
+ * Text-only LLM bridge using Claude's native tool use.
+ * STT and TTS are client-side (ADR 005).
  *
  * Protocol (JSON text frames):
  *
  * Client → Server:
- *   { type: 'text', text: '...' }  — User utterance (from client-side STT or typed)
+ *   { type: 'text', text: '...' }  — User utterance
  *
  * Server → Client:
  *   { type: 'thinking' }           — LLM is processing
- *   { type: 'response', text }     — LLM response text (client handles TTS)
- *   { type: 'error', message }     — Error
- *
- * Usage:
- *   npx tsx server/voice-relay.ts [--port 8092]
+ *   { type: 'response', text }     — LLM spoken response (client handles TTS)
+ *   { type: 'command', name, input } — Tool invocation to execute
+ *   { type: 'error', message }      — Error
+ *   { type: 'init', todo }          — Initial workspace state on connect
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
@@ -35,47 +35,109 @@ const LLM_MAX_TOKENS = 1024;
 const TODO_PATH = path.join(os.homedir(), '.openclaw', 'workspace', 'todo.md');
 
 // ---------------------------------------------------------------------------
+// Tool definitions — Claude JSON Schema
+// ---------------------------------------------------------------------------
+
+const TOOLS = [
+  {
+    name: 'create_pane',
+    description: 'Create a new pane in the workspace. Only when the user explicitly requests it.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        pane_type: {
+          type: 'string',
+          enum: ['pty', 'browser', 'text', 'task'],
+          description: 'pty = real shell session, browser = live browser tab, text = static content display, task = labeled card',
+        },
+        label: { type: 'string', description: 'Display label for the pane' },
+        command: { type: 'string', description: 'For pty panes only: initial command to run in the shell' },
+        content: { type: 'string', description: 'For text panes only: text content to display' },
+      },
+      required: ['pane_type', 'label'],
+    },
+  },
+  {
+    name: 'remove_pane',
+    description: 'Remove a pane from the workspace.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        label: { type: 'string', description: 'Label of the pane to remove (partial match OK)' },
+      },
+      required: ['label'],
+    },
+  },
+  {
+    name: 'scroll_pane',
+    description: 'Scroll a text pane.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        label: { type: 'string', description: 'Label of the text pane to scroll' },
+        direction: { type: 'string', enum: ['up', 'down'] },
+        amount: {
+          type: 'string',
+          enum: ['small', 'medium', 'large', 'top', 'bottom'],
+          description: 'How far to scroll. small ~3 lines, medium ~half page, large ~full page, top/bottom = jump to start/end',
+        },
+      },
+      required: ['label', 'direction'],
+    },
+  },
+  {
+    name: 'update_todo',
+    description: 'Replace the todo list with updated content. Use when the user asks to add, remove, or modify todo items.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        content: { type: 'string', description: 'Complete updated todo.md content (replaces entire file)' },
+      },
+      required: ['content'],
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface ClientMessage {
-  type: 'text';
+interface ContentBlock {
+  type: string;
   text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
 }
 
-interface ServerMessage {
-  type: 'response' | 'thinking' | 'error';
-  text?: string;
-  message?: string;
+interface ApiResponse {
+  content: ContentBlock[];
+  stop_reason: string;
 }
 
 interface ConversationMessage {
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
 }
 
 interface Connection {
   ws: WebSocket;
   id: string;
-  conversationHistory: ConversationMessage[];
+  history: ConversationMessage[];
   processing: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Todo file helpers
+// Todo file
 // ---------------------------------------------------------------------------
 
-function readTodoFile(): string {
-  try {
-    return fs.readFileSync(TODO_PATH, 'utf-8');
-  } catch {
-    return '(No todo file found)';
-  }
+function readTodo(): string {
+  try { return fs.readFileSync(TODO_PATH, 'utf-8'); }
+  catch { return '(No todo file found)'; }
 }
 
-function writeTodoFile(content: string): void {
-  const dir = path.dirname(TODO_PATH);
-  fs.mkdirSync(dir, { recursive: true });
+function writeTodo(content: string): void {
+  fs.mkdirSync(path.dirname(TODO_PATH), { recursive: true });
   fs.writeFileSync(TODO_PATH, content, 'utf-8');
   console.log('[voice] Updated todo file');
 }
@@ -85,86 +147,46 @@ function writeTodoFile(content: string): void {
 // ---------------------------------------------------------------------------
 
 function buildSystemPrompt(): string {
-  const todo = readTodoFile();
-  return `You are the voice assistant for Crush — a 3D spatial workspace built with Three.js/WebGPU. You help the user manage their workspace through natural conversation.
+  const todo = readTodo();
+  return `You are the voice assistant for Crush, a spatial workspace rendered in 3D. The user talks to you; you talk back and manage their workspace using tools.
 
-You're in conversational mode — after you speak, the mic automatically resumes listening. Keep responses SHORT and natural (1-3 sentences). No markdown, no bullet lists, no numbered lists — just talk like a person.
+Keep responses SHORT — 1-3 sentences, conversational. No markdown, no bullet lists. Talk like a person.
 
-## The Workspace
+## Workspace
 
-Crush renders a spatial grid of panes in 3D. Each pane is a task node backed by a resource:
-- **PTY panes**: real shell sessions on the server (bash via WebSocket)
-- **Terminal panes**: local WASM terminals (Ghostty VT emulation)
-- **Browser panes**: live browser tab streams via CDP screencast
-- **Task panes**: labeled cards for organizing work
+The workspace is a grid of panes:
+- PTY panes: real bash shell sessions
+- Browser panes: live browser tab streams
+- Text panes: scrollable text/markdown content
+- Task panes: labeled organizational cards
 
-The pane system is a task graph — tasks can have children, forming a hierarchy. Users can "dive into" a parent task to see its subtasks as panes, and navigate back up with Escape.
+On startup, two panes exist: "Shell" (PTY) and "Todo" (text, showing the todo list). Don't recreate these.
 
-Current keyboard shortcuts:
-- P: create a PTY shell pane
-- A: add a task pane
-- B: add a browser pane
-- S: split/decompose focused pane into subtasks
-- X: complete and remove focused pane
-- D: run demo sequence
-- Click: focus a pane (zoom in)
-- Click focused: dive into children (if any)
-- Escape: zoom out / navigate up
+## Rules
 
-You can issue commands to control the workspace by including a commands block at the END of your response:
+- Only create panes when the user explicitly asks.
+- Never create empty shells speculatively.
+- One pane per clear user intent — don't over-create.
+- The workspace should stay clean and purposeful.
 
-<workspace_commands>
-{"action": "create_task", "label": "Research API design"}
-</workspace_commands>
+## Todo list
 
-Available actions:
-- create_task: Create a labeled task pane. Fields: label (string), parentId? (string)
-- create_pty: Create a PTY shell pane. Fields: label (string), command? (string — command to run in the shell)
-- create_browser: Create a browser pane. Fields: label (string)
-- complete_task: Complete and remove a task. Fields: taskId (string) OR label (string)
+Current contents:
 
-RULES for workspace commands:
-- ONLY create panes when the user explicitly asks for them.
-- NEVER create empty/idle shells. If you create a PTY, it must have a purpose (running a command, editing a file, etc.).
-- NEVER speculatively create multiple panes "just in case." One pane per clear user intent.
-- The todo list is already shown as a pane on startup — don't recreate it.
-- Prefer doing less over doing more. The workspace should be clean and purposeful.
-- Each line in the commands block is a separate JSON command.
-
-## Current Workspace State
-
-On startup, the workspace automatically creates:
-- A Shell pane (PTY, already running bash)
-- A Todo pane (showing the todo list below)
-
-These already exist — don't recreate them.
-
-## Todo List
-
-You have access to the user's todo file:
-
----
 ${todo}
----
 
-To update it, include at the END of your response (after any workspace_commands):
-
-<todo_update>
-(entire updated todo.md content)
-</todo_update>
-
-Today's date is ${new Date().toISOString().split('T')[0]}.`;
+Today is ${new Date().toISOString().split('T')[0]}.`;
 }
 
 // ---------------------------------------------------------------------------
-// LLM
+// LLM call with tool use loop
 // ---------------------------------------------------------------------------
 
 async function callLLM(
   systemPrompt: string,
   messages: ConversationMessage[],
-): Promise<string> {
-  const response = await fetch(LLM_ENDPOINT, {
+): Promise<ApiResponse> {
+  const res = await fetch(LLM_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -175,115 +197,143 @@ async function callLLM(
       max_tokens: LLM_MAX_TOKENS,
       system: systemPrompt,
       messages,
+      tools: TOOLS,
     }),
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`LLM error ${response.status}: ${errText}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`LLM ${res.status}: ${errText}`);
   }
 
-  const data = await response.json() as {
-    content: Array<{ type: string; text?: string }>;
-  };
-
-  return data.content
-    .filter((b) => b.type === 'text' && b.text)
-    .map((b) => b.text!)
-    .join('\n');
+  return res.json() as Promise<ApiResponse>;
 }
 
-interface ParsedResponse {
-  spoken: string;
-  todoContent: string | null;
-  commands: Record<string, unknown>[];
-}
-
-function parseResponse(response: string): ParsedResponse {
-  let text = response;
-  let todoContent: string | null = null;
-  const commands: Record<string, unknown>[] = [];
-
-  // Extract todo update
-  const todoMatch = text.match(/<todo_update>\s*([\s\S]*?)\s*<\/todo_update>/);
-  if (todoMatch) {
-    todoContent = todoMatch[1].trim();
-    text = text.replace(/<todo_update>[\s\S]*?<\/todo_update>/, '');
-  }
-
-  // Extract workspace commands
-  const cmdMatch = text.match(/<workspace_commands>\s*([\s\S]*?)\s*<\/workspace_commands>/);
-  if (cmdMatch) {
-    const lines = cmdMatch[1].trim().split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        commands.push(JSON.parse(trimmed));
-      } catch (e) {
-        console.error('[voice] Failed to parse command:', trimmed);
-      }
+/** Execute a tool call. Returns the result string for the tool_result message. */
+function executeTool(
+  name: string,
+  input: Record<string, unknown>,
+  conn: Connection,
+): string {
+  switch (name) {
+    case 'create_pane': {
+      const paneType = String(input.pane_type);
+      const label = String(input.label);
+      send(conn.ws, { type: 'command', name: 'create_pane', input: { pane_type: paneType, label, command: input.command, content: input.content } });
+      return `Created ${paneType} pane "${label}".`;
     }
-    text = text.replace(/<workspace_commands>[\s\S]*?<\/workspace_commands>/, '');
+    case 'remove_pane': {
+      const label = String(input.label);
+      send(conn.ws, { type: 'command', name: 'remove_pane', input: { label } });
+      return `Removed pane "${label}".`;
+    }
+    case 'scroll_pane': {
+      const label = String(input.label);
+      const direction = String(input.direction);
+      const amount = String(input.amount || 'medium');
+      send(conn.ws, { type: 'command', name: 'scroll_pane', input: { label, direction, amount } });
+      return `Scrolled "${label}" ${direction} (${amount}).`;
+    }
+    case 'update_todo': {
+      const content = String(input.content);
+      writeTodo(content);
+      // Also tell the client to refresh the todo pane
+      send(conn.ws, { type: 'command', name: 'update_todo', input: { content } });
+      return 'Todo list updated.';
+    }
+    default:
+      console.warn(`[voice] Unknown tool: ${name}`);
+      return `Unknown tool: ${name}`;
   }
-
-  return { spoken: text.trim(), todoContent, commands };
 }
 
 // ---------------------------------------------------------------------------
-// Send helper
-// ---------------------------------------------------------------------------
-
-function send(ws: WebSocket, msg: ServerMessage): void {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Process text through LLM
+// Process user text — full tool use loop
 // ---------------------------------------------------------------------------
 
 async function processText(conn: Connection, userText: string): Promise<void> {
   if (!userText.trim()) return;
-
   if (conn.processing) {
     send(conn.ws, { type: 'error', message: 'Still processing previous request' });
     return;
   }
 
   conn.processing = true;
-  console.log(`[voice:${conn.id}] "${userText.substring(0, 80)}${userText.length > 80 ? '...' : ''}"`);
+  const tag = `[voice:${conn.id}]`;
+  console.log(`${tag} "${userText.substring(0, 80)}${userText.length > 80 ? '...' : ''}"`);
 
   try {
-    conn.conversationHistory.push({ role: 'user', content: userText });
-    if (conn.conversationHistory.length > 20) {
-      conn.conversationHistory = conn.conversationHistory.slice(-20);
-    }
+    // Add user message
+    conn.history.push({ role: 'user', content: userText });
+    if (conn.history.length > 30) conn.history = conn.history.slice(-30);
 
     send(conn.ws, { type: 'thinking' });
-    const rawResponse = await callLLM(buildSystemPrompt(), conn.conversationHistory);
-    const { spoken, todoContent, commands } = parseResponse(rawResponse);
+    const systemPrompt = buildSystemPrompt();
 
-    if (todoContent) writeTodoFile(todoContent);
+    // Tool use loop: keep calling until stop_reason is 'end_turn'
+    let spokenParts: string[] = [];
+    let iterations = 0;
+    const MAX_ITERATIONS = 5;  // safety limit
 
-    conn.conversationHistory.push({ role: 'assistant', content: spoken });
-    send(conn.ws, { type: 'response', text: spoken });
-    console.log(`[voice:${conn.id}] Response: "${spoken.substring(0, 80)}${spoken.length > 80 ? '...' : ''}"`);
+    while (iterations < MAX_ITERATIONS) {
+      iterations++;
+      const response = await callLLM(systemPrompt, conn.history);
 
-    // Forward workspace commands to client
-    if (commands.length > 0) {
-      console.log(`[voice:${conn.id}] Sending ${commands.length} workspace command(s)`);
-      for (const cmd of commands) {
-        send(conn.ws, { type: 'command' as any, ...cmd });
+      // Collect text blocks for TTS
+      for (const block of response.content) {
+        if (block.type === 'text' && block.text) {
+          spokenParts.push(block.text);
+        }
       }
+
+      // Store full assistant response in history (preserves tool_use blocks)
+      conn.history.push({ role: 'assistant', content: response.content });
+
+      // If no tool use, we're done
+      if (response.stop_reason !== 'tool_use') break;
+
+      // Execute tool calls and build tool_result message
+      const toolResults: ContentBlock[] = [];
+      for (const block of response.content) {
+        if (block.type === 'tool_use' && block.id && block.name && block.input) {
+          console.log(`${tag} Tool: ${block.name}(${JSON.stringify(block.input)})`);
+          const result = executeTool(block.name, block.input, conn);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: result,
+          } as any);
+        }
+      }
+
+      // Send tool results back as a user message (Anthropic API format)
+      conn.history.push({ role: 'user', content: toolResults });
     }
+
+    // Send spoken response to client
+    const spoken = spokenParts.join(' ').trim();
+    if (spoken) {
+      send(conn.ws, { type: 'response', text: spoken });
+      console.log(`${tag} Response: "${spoken.substring(0, 80)}${spoken.length > 80 ? '...' : ''}"`);
+    } else {
+      // Tool-only response with no speech — send empty response so client resumes listening
+      send(conn.ws, { type: 'response', text: '' });
+    }
+
   } catch (err: any) {
-    console.error(`[voice:${conn.id}] Error:`, err.message);
+    console.error(`${tag} Error:`, err.message);
     send(conn.ws, { type: 'error', message: err.message });
   } finally {
     conn.processing = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket helpers
+// ---------------------------------------------------------------------------
+
+function send(ws: WebSocket, msg: Record<string, unknown>): void {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
 // ---------------------------------------------------------------------------
@@ -296,25 +346,15 @@ function handleConnection(ws: WebSocket): void {
   const id = String(++connectionCounter);
   console.log(`[voice:${id}] Client connected`);
 
-  const conn: Connection = {
-    ws,
-    id,
-    conversationHistory: [],
-    processing: false,
-  };
+  const conn: Connection = { ws, id, history: [], processing: false };
 
-  // Send initial workspace state (todo content) on connect
-  const todoContent = readTodoFile();
-  send(ws, { type: 'init' as any, todo: todoContent });
+  // Send initial state
+  send(ws, { type: 'init', todo: readTodo() });
 
   ws.on('message', async (raw: Buffer | string) => {
-    let msg: ClientMessage;
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch {
-      send(ws, { type: 'error', message: 'Invalid JSON' });
-      return;
-    }
+    let msg: { type: string; text?: string };
+    try { msg = JSON.parse(raw.toString()); }
+    catch { send(ws, { type: 'error', message: 'Invalid JSON' }); return; }
 
     if (msg.type === 'text' && msg.text?.trim()) {
       await processText(conn, msg.text.trim());
@@ -330,9 +370,10 @@ function handleConnection(ws: WebSocket): void {
 // ---------------------------------------------------------------------------
 
 const wss = new WebSocketServer({ port: WS_PORT });
-console.log(`Voice relay (text-only LLM bridge) on ws://localhost:${WS_PORT}`);
+console.log(`Voice relay (tool-use LLM bridge) on ws://localhost:${WS_PORT}`);
 console.log(`LLM: ${LLM_ENDPOINT}`);
 console.log(`Todo: ${TODO_PATH}`);
+console.log(`Tools: ${TOOLS.map(t => t.name).join(', ')}`);
 
 wss.on('connection', handleConnection);
 wss.on('error', (err: Error) => console.error('[voice] Server error:', err.message));

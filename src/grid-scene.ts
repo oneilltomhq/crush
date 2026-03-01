@@ -347,41 +347,95 @@ function onResize(): void {
   relayout();
 }
 
-// --- Voice commands from LLM ---
+// --- Voice commands from LLM (tool use) ---
 
-function handleVoiceCommand(cmd: { action: string; [key: string]: unknown }): void {
-  switch (cmd.action) {
-    case 'create_task': {
-      const label = String(cmd.label || 'Task');
-      const parentId = cmd.parentId ? String(cmd.parentId) : (currentParentId ?? undefined);
-      taskGraph.createTask(label, parentId);
-      break;
-    }
-    case 'create_pty': {
-      const label = String(cmd.label || 'Shell');
-      const resource: ResourceDescriptor = { type: 'pty', uri: `pty://${PTY_WS_URL}` };
+function handleCommand(cmd: { name: string; input: Record<string, unknown> }): void {
+  const { name, input } = cmd;
+
+  switch (name) {
+    case 'create_pane': {
+      const paneType = String(input.pane_type || 'task');
+      const label = String(input.label || 'Pane');
+      let resource: ResourceDescriptor | undefined;
+
+      switch (paneType) {
+        case 'pty':
+          resource = { type: 'pty', uri: `pty://${PTY_WS_URL}` };
+          break;
+        case 'browser':
+          resource = { type: 'browser', uri: 'cdp://remote/tab/live' };
+          break;
+        case 'text':
+          resource = {
+            type: 'editor',
+            uri: `content://${encodeURIComponent(String(input.content || ''))}`,
+          };
+          break;
+        // 'task' — no resource, plain pane
+      }
+
       taskGraph.createTask(label, currentParentId ?? undefined, resource);
+      console.log(`[cmd] create_pane: ${paneType} "${label}"`);
       break;
     }
-    case 'create_browser': {
-      const label = String(cmd.label || 'Browser');
-      const resource: ResourceDescriptor = { type: 'browser', uri: 'cdp://remote/tab/live' };
-      taskGraph.createTask(label, currentParentId ?? undefined, resource);
-      break;
-    }
-    case 'complete_task': {
-      if (cmd.taskId) {
-        taskGraph.completeAndDestroy(String(cmd.taskId));
-      } else if (cmd.label) {
-        const label = String(cmd.label).toLowerCase();
-        const tasks = currentParentId ? taskGraph.getChildren(currentParentId) : taskGraph.getRootTasks();
-        const match = tasks.find(t => t.label.toLowerCase().includes(label));
-        if (match) taskGraph.completeAndDestroy(match.id);
+
+    case 'remove_pane': {
+      const label = String(input.label || '').toLowerCase();
+      const tasks = currentParentId
+        ? taskGraph.getChildren(currentParentId)
+        : taskGraph.getRootTasks();
+      const match = tasks.find(t => t.label.toLowerCase().includes(label));
+      if (match) {
+        taskGraph.completeAndDestroy(match.id);
+        console.log(`[cmd] remove_pane: "${match.label}"`);
+      } else {
+        console.warn(`[cmd] remove_pane: no pane matching "${label}"`);
       }
       break;
     }
+
+    case 'scroll_pane': {
+      const label = String(input.label || '').toLowerCase();
+      const direction = String(input.direction || 'down');
+      const amount = String(input.amount || 'medium');
+
+      // Find the text pane by label
+      let targetPane: Pane | undefined;
+      for (const [, pane] of taskPaneMap) {
+        if (pane.label.toLowerCase().includes(label) && pane instanceof TextPane) {
+          targetPane = pane;
+          break;
+        }
+      }
+
+      if (targetPane && targetPane instanceof TextPane) {
+        const px = { small: 48, medium: 150, large: 300, top: -99999, bottom: 99999 }[amount] || 150;
+        const dy = direction === 'up' ? -px : px;
+        if (amount === 'top') targetPane.textTexture.scrollTo(0);
+        else if (amount === 'bottom') targetPane.textTexture.scrollTo(targetPane.textTexture.maxScroll);
+        else targetPane.scroll(dy);
+        console.log(`[cmd] scroll_pane: "${targetPane.label}" ${direction} ${amount}`);
+      } else {
+        console.warn(`[cmd] scroll_pane: no text pane matching "${label}"`);
+      }
+      break;
+    }
+
+    case 'update_todo': {
+      const content = String(input.content || '');
+      // Find the Todo text pane and update it
+      for (const [, pane] of taskPaneMap) {
+        if (pane.label.toLowerCase().includes('todo') && pane instanceof TextPane) {
+          pane.updateContent(content);
+          console.log('[cmd] update_todo: refreshed pane');
+          break;
+        }
+      }
+      break;
+    }
+
     default:
-      console.log('[voice] Unknown command action:', cmd.action);
+      console.warn(`[cmd] Unknown command: ${name}`);
   }
 }
 
@@ -462,8 +516,7 @@ function initVoice(): void {
       connDot.style.background = connected ? '#44ff88' : '#ff4466';
     },
     onCommand(cmd) {
-      console.log('[voice] Command:', cmd);
-      handleVoiceCommand(cmd);
+      handleCommand(cmd);
     },
     onInit(data) {
       if (data.todo) {
@@ -478,6 +531,17 @@ function initVoice(): void {
   });
 
   voiceClient.connect();
+
+  // Auto-start conversation mode — always listening
+  // Wait for server connection before starting mic
+  const autoStart = () => {
+    if (voiceClient!.isConnected) {
+      voiceClient!.startConversation();
+    } else {
+      setTimeout(autoStart, 500);
+    }
+  };
+  setTimeout(autoStart, 1000);
 }
 
 function updateVoiceStatusText(state: string): void {

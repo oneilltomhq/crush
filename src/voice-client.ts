@@ -37,7 +37,7 @@ export interface VoiceClientOptions {
   onStateChange?: (state: VoiceState) => void;
   onError?: (message: string) => void;
   onConnected?: (connected: boolean) => void;
-  onCommand?: (command: { action: string; [key: string]: unknown }) => void;
+  onCommand?: (command: { name: string; input: Record<string, unknown> }) => void;
   onInit?: (data: { todo?: string }) => void;
 }
 
@@ -45,7 +45,7 @@ type ServerMessage =
   | { type: 'response'; text: string }
   | { type: 'thinking' }
   | { type: 'error'; message: string }
-  | { type: 'command'; action: string; [key: string]: unknown }
+  | { type: 'command'; name: string; input: Record<string, unknown> }
   | { type: 'init'; todo?: string };
 
 // ---------------------------------------------------------------------------
