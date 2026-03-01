@@ -14,9 +14,9 @@ import * as THREE from 'three/webgpu';
 export interface BrowserTextureOptions {
   /** WebSocket URL of the CDP relay server */
   wsUrl: string;
-  /** Canvas width (default: 768) */
+  /** Canvas width (default: 1200, matches CDP viewport) */
   width?: number;
-  /** Canvas height (default: 432, 16:9 to match CDP screencast) */
+  /** Canvas height (default: 600, 2:1 to match pane aspect) */
   height?: number;
 }
 
@@ -42,8 +42,8 @@ export class BrowserTexture {
   get tabUrl(): string { return this.meta.url || ''; }
 
   constructor(private options: BrowserTextureOptions) {
-    const w = options.width || 768;
-    const h = options.height || 432;
+    const w = options.width || 1200;
+    const h = options.height || 600;
 
     this.canvas = document.createElement('canvas');
     this.canvas.width = w;

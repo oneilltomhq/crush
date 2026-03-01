@@ -122,7 +122,19 @@ async function main() {
   console.log('Connected to CDP');
 
   await cdp.send('Page.enable');
-  
+
+  // Force the viewport to a wide aspect ratio matching the 3D pane (2:1)
+  // This makes pages render at a size natural for the pane, not the host window
+  const VIEWPORT_W = 1200;
+  const VIEWPORT_H = 600;
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: VIEWPORT_W,
+    height: VIEWPORT_H,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  console.log(`Viewport set to ${VIEWPORT_W}x${VIEWPORT_H}`);
+
   // Navigate if we got an existing tab and a URL was specified
   if (TARGET_URL !== 'https://example.com') {
     await cdp.send('Page.navigate', { url: TARGET_URL });
@@ -157,9 +169,9 @@ async function main() {
     if (screencastRunning) return;
     await cdp.send('Page.startScreencast', {
       format: 'jpeg',
-      quality: 60,
-      maxWidth: 1280,
-      maxHeight: 720,
+      quality: 85,
+      maxWidth: VIEWPORT_W,
+      maxHeight: VIEWPORT_H,
       everyNthFrame: 1,
     });
     screencastRunning = true;
