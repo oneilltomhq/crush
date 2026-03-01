@@ -1,15 +1,20 @@
 /**
- * Spatial model — task-driven pane grid.
+ * Spatial model — task-driven pane grid with depth navigation.
  *
  * Panes are created/removed/updated in response to TaskGraph events.
  * The grid scene subscribes to onChange and reflects visible tasks as panes.
  *
+ * Decomposition places child panes spatially behind the parent.
+ * Clicking a parent with children flies the camera through to the child level.
+ * Escape / back button returns to the parent level.
+ *
  * Controls:
  *   A         — add a new task (auto-labeled)
+ *   S         — decompose focused task into subtasks
  *   D         — run demo sequence
  *   X         — complete focused task
- *   Click     — focus a pane (click again or Escape to zoom out)
- *   Escape    — zoom to overview
+ *   Click     — focus a pane; click focused parent with children to dive in
+ *   Escape    — go up one level (or zoom to overview)
  */
 
 import * as THREE from 'three/webgpu';
@@ -20,6 +25,7 @@ const PANE_W = 48;
 const PANE_H = 24;
 const GAP = 4;
 const FLY_MS = 400;
+const DEPTH_Z = -(PANE_H + GAP) * 1.5;  // Z offset per depth level
 
 // --- Types ---
 interface Pane {
@@ -39,6 +45,11 @@ const taskPaneMap = new Map<string, Pane>();  // task ID → Pane
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let focusedPane: Pane | null = null;
+
+// Depth navigation: which parent are we viewing children of?
+// null = root level. Stack allows nested dive-in.
+let currentParentId: string | null = null;
+const navStack: (string | null)[] = [];  // previous parent IDs for back navigation
 
 // Task graph
 const taskGraph = new TaskGraph();
@@ -109,8 +120,8 @@ function onTaskEvent(event: TaskEvent): void {
     case 'created': {
       const task = taskGraph.getTask(event.taskId);
       if (!task) break;
-      // Only add panes for root-level (visible) tasks
-      if (task.parentId === null) {
+      // Add pane if this task belongs to the level we're currently viewing
+      if (task.parentId === currentParentId) {
         addPaneForTask(task);
       }
       break;
@@ -124,10 +135,8 @@ function onTaskEvent(event: TaskEvent): void {
       break;
     }
     case 'decomposed': {
-      // Parent pane stays visible. Children are "behind" it conceptually.
-      // TODO: depth rendering — show child panes stacked behind parent
-      // For now the parent pane remains and children don't get their own top-level panes
-      // (they're sub-tasks, not root-visible).
+      // Mark the parent pane as having children (visual indicator)
+      markPaneHasChildren(event.taskId);
       updateHUD();
       break;
     }
@@ -210,6 +219,93 @@ function highlightPaneActive(taskId: string): void {
   const borderMat = pane.border.material as THREE.LineBasicNodeMaterial;
   borderMat.color.set(0x5577ff);
   updateHUD();
+}
+
+function markPaneHasChildren(taskId: string): void {
+  const pane = taskPaneMap.get(taskId);
+  if (!pane) return;
+
+  // Add a subtle depth indicator — double-line border bottom
+  const borderMat = pane.border.material as THREE.LineBasicNodeMaterial;
+  borderMat.color.set(0x6666aa);
+
+  // Add a small "▸" indicator to signal "dive in"
+  addDepthIndicator(pane);
+}
+
+function addDepthIndicator(pane: Pane): void {
+  // Small arrow mesh showing there's depth to explore
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = 'rgba(100,100,200,0.7)';
+  ctx.font = 'bold 48px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('▸', 32, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicNodeMaterial({ map: tex, transparent: true });
+  const geo = new THREE.PlaneGeometry(3, 3);
+  const indicator = new THREE.Mesh(geo, mat);
+  indicator.position.set(PANE_W / 2 - 2.5, -PANE_H / 2 + 2.5, 0.2);
+  indicator.name = 'depth-indicator';
+  pane.mesh.add(indicator);
+}
+
+// --- Depth Navigation ---
+
+/** Dive into a parent task — show its children as panes. */
+function diveInto(parentTaskId: string): void {
+  // Save current level on the stack
+  navStack.push(currentParentId);
+  currentParentId = parentTaskId;
+  focusedPane = null;
+
+  // Remove all current panes from scene
+  clearAllPanes();
+
+  // Get children and add them as panes
+  const children = taskGraph.getChildren(parentTaskId);
+  for (const child of children) {
+    addPaneForTask(child);
+  }
+
+  updateHUD();
+}
+
+/** Navigate back up one level. */
+function navigateUp(): void {
+  if (navStack.length === 0) return;  // already at root
+
+  currentParentId = navStack.pop()!;
+  focusedPane = null;
+
+  // Remove all current panes from scene
+  clearAllPanes();
+
+  // Get tasks at this level and add them
+  const tasks = currentParentId === null
+    ? taskGraph.getRootTasks()
+    : taskGraph.getChildren(currentParentId);
+
+  for (const task of tasks) {
+    addPaneForTask(task);
+  }
+
+  updateHUD();
+}
+
+function clearAllPanes(): void {
+  for (const pane of [...panes]) {
+    scene.remove(pane.mesh);
+    scene.remove(pane.border);
+    pane.mesh.geometry.dispose();
+    pane.border.geometry.dispose();
+  }
+  panes.length = 0;
+  taskPaneMap.clear();
 }
 
 // --- Layout ---
@@ -384,7 +480,13 @@ function handlePointer(clientX: number, clientY: number): void {
     const pane = panes.find(p => p.mesh === hitMesh);
     if (pane) {
       if (focusedPane === pane) {
-        zoomOut();
+        // If this pane's task has children, dive in
+        const task = taskGraph.getTask(pane.taskId);
+        if (task && task.childIds.length > 0) {
+          diveInto(pane.taskId);
+        } else {
+          zoomOut();
+        }
       } else {
         zoomTo(pane);
       }
@@ -400,7 +502,19 @@ function onKeyDown(event: KeyboardEvent): void {
     event.preventDefault();
     const label = AUTO_LABELS[autoLabelCounter % AUTO_LABELS.length];
     autoLabelCounter++;
-    taskGraph.createTask(label);
+    taskGraph.createTask(label, currentParentId ?? undefined);
+  } else if (key === 's') {
+    event.preventDefault();
+    if (focusedPane) {
+      const task = taskGraph.getTask(focusedPane.taskId);
+      if (task && task.childIds.length === 0) {
+        // Decompose into 3 random subtasks
+        const subs = ['Design', 'Implement', 'Test', 'Review', 'Deploy', 'Research', 'Refactor'];
+        const pick = [0, 1, 2].map(i => `${subs[(autoLabelCounter + i) % subs.length]} ${task.label}`);
+        autoLabelCounter += 3;
+        taskGraph.decompose(task.id, pick);
+      }
+    }
   } else if (key === 'x') {
     event.preventDefault();
     if (focusedPane) {
@@ -411,7 +525,11 @@ function onKeyDown(event: KeyboardEvent): void {
     event.preventDefault();
     runDemoSequence();
   } else if (event.key === 'Escape') {
-    if (focusedPane) zoomOut();
+    if (focusedPane) {
+      zoomOut();
+    } else if (navStack.length > 0) {
+      navigateUp();
+    }
   }
 }
 
@@ -426,32 +544,46 @@ async function runDemoSequence(): Promise<void> {
   if (demoRunning) return;
   demoRunning = true;
 
-  // Step 1: Create "To-do list" task
-  const todo = taskGraph.createTask('To-do list');
-  await delay(800);
-
-  // Step 2: Activate it
-  taskGraph.activate(todo.id);
+  // Step 1: Create tasks at root
+  taskGraph.createTask('API server');
   await delay(600);
-
-  // Step 3: Decompose into 3 subtasks
-  const subs = taskGraph.decompose(todo.id, ['Design UI', 'Build API', 'Write tests']);
-  await delay(1000);
-
-  // Step 4: Create a separate root task to show grid growth
-  taskGraph.createTask('Deploy');
+  const auth = taskGraph.createTask('Auth service');
+  await delay(600);
+  taskGraph.createTask('Frontend');
   await delay(800);
 
-  // Step 5: Complete one subtask
-  taskGraph.complete(subs[0].id);
+  // Step 2: Focus Auth, then decompose it
+  const authPane = taskPaneMap.get(auth.id);
+  if (authPane) zoomTo(authPane);
+  await delay(800);
+
+  taskGraph.decompose(auth.id, ['OAuth flow', 'Session store', 'Rate limiter']);
+  await delay(800);
+
+  // Step 3: Dive into Auth to see children
+  diveInto(auth.id);
+  await delay(1200);
+
+  // Step 4: Focus a child, decompose it further
+  const oauthTask = taskGraph.getChildren(auth.id)[0];
+  if (oauthTask) {
+    const oauthPane = taskPaneMap.get(oauthTask.id);
+    if (oauthPane) zoomTo(oauthPane);
+    await delay(800);
+
+    taskGraph.decompose(oauthTask.id, ['Google provider', 'GitHub provider', 'Token refresh']);
+    await delay(800);
+
+    // Dive deeper
+    diveInto(oauthTask.id);
+    await delay(1200);
+  }
+
+  // Step 5: Navigate back up through levels
   await delay(1000);
-
-  // Step 6: Complete the parent (to-do list) with flash
-  taskGraph.complete(todo.id);
-  await delay(1500);
-
-  // Step 7: Destroy the completed parent (removes its pane)
-  taskGraph.destroy(todo.id);
+  navigateUp();  // back to Auth's children
+  await delay(1000);
+  navigateUp();  // back to root
   await delay(500);
 
   demoRunning = false;
@@ -514,19 +646,31 @@ function updateHUD(): void {
     document.body.appendChild(hudEl);
   }
 
-  const visible = taskGraph.getVisibleTasks();
-  const pending = visible.filter(t => t.status === 'pending').length;
-  const active = visible.filter(t => t.status === 'active').length;
-  const complete = visible.filter(t => t.status === 'complete').length;
+  // Breadcrumb: show navigation path
+  const breadcrumb: string[] = ['root'];
+  for (const parentId of navStack) {
+    if (parentId !== null) {
+      const t = taskGraph.getTask(parentId);
+      breadcrumb.push(t ? t.label : parentId);
+    }
+  }
+  if (currentParentId !== null) {
+    const t = taskGraph.getTask(currentParentId);
+    breadcrumb.push(t ? t.label : currentParentId);
+  }
 
-  const parts: string[] = [`${panes.length} pane${panes.length !== 1 ? 's' : ''}`];
-  const statParts: string[] = [];
-  if (pending) statParts.push(`${pending} pending`);
-  if (active) statParts.push(`${active} active`);
-  if (complete) statParts.push(`${complete} done`);
-  if (statParts.length) parts.push(statParts.join(', '));
+  const depth = navStack.length;
+  const depthStr = depth > 0 ? ` · depth ${depth}` : '';
 
-  hudEl.innerHTML = `${parts.join(' · ')}<br>A: add · D: demo · X: complete focused · Click: focus · Esc: overview`;
+  const parts: string[] = [`${panes.length} pane${panes.length !== 1 ? 's' : ''}${depthStr}`];
+
+  // Show breadcrumb if not at root
+  if (currentParentId !== null) {
+    parts.push(breadcrumb.join(' › '));
+  }
+
+  const keys = ['A:add', 'S:split', 'D:demo', 'X:done', 'Click:focus/dive', 'Esc:back'];
+  hudEl.innerHTML = `${parts.join(' · ')}<br>${keys.join(' · ')}`;
 }
 
 // --- Go ---
