@@ -27,7 +27,7 @@ A browser-native agent shell, by extension.
 
 Working end-to-end: the side panel boots a WebGPU renderer backed by Ghostty's WASM VT emulator, with a local shell accepting commands. No PTY backend yet — connect a WebSocket server for a real shell.
 
-Active areas: CDP agent commands, offscreen document handoff for background operation, tab capture → WebGPU texture pipeline. See `TODO.md` for specifics.
+Active areas: PTY relay, CDP browser panes, task-graph-driven workspace. See `adr/` for architectural direction.
 
 ## Architecture
 
