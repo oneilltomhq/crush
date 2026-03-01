@@ -810,6 +810,45 @@ function updateHUD(): void {
   hudEl.innerHTML = `${parts.join(' · ')}<br>${keys.join(' · ')}`;
 }
 
+// --- Voice commands from LLM ---
+
+function handleVoiceCommand(cmd: { action: string; [key: string]: unknown }): void {
+  switch (cmd.action) {
+    case 'create_task': {
+      const label = String(cmd.label || 'Task');
+      const parentId = cmd.parentId ? String(cmd.parentId) : (currentParentId ?? undefined);
+      taskGraph.createTask(label, parentId);
+      break;
+    }
+    case 'create_pty': {
+      const label = String(cmd.label || 'Shell');
+      const resource: ResourceDescriptor = { type: 'pty', uri: `pty://${PTY_WS_URL}` };
+      taskGraph.createTask(label, currentParentId ?? undefined, resource);
+      break;
+    }
+    case 'create_browser': {
+      const label = String(cmd.label || 'Browser');
+      const resource: ResourceDescriptor = { type: 'browser', uri: 'cdp://remote/tab/live' };
+      taskGraph.createTask(label, currentParentId ?? undefined, resource);
+      break;
+    }
+    case 'complete_task': {
+      // Find by taskId or label
+      if (cmd.taskId) {
+        taskGraph.completeAndDestroy(String(cmd.taskId));
+      } else if (cmd.label) {
+        const label = String(cmd.label).toLowerCase();
+        const tasks = currentParentId ? taskGraph.getChildren(currentParentId) : taskGraph.getRootTasks();
+        const match = tasks.find(t => t.label.toLowerCase().includes(label));
+        if (match) taskGraph.completeAndDestroy(match.id);
+      }
+      break;
+    }
+    default:
+      console.log('[voice] Unknown command action:', cmd.action);
+  }
+}
+
 // --- Voice ---
 
 let voiceOverlay: HTMLElement | null = null;
@@ -848,7 +887,7 @@ function initVoice(): void {
   `;
   voiceOverlay.appendChild(statusEl);
 
-  // Mic button
+  // Mic button (toggle, not hold)
   micBtn = document.createElement('button');
   micBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
@@ -894,20 +933,10 @@ function initVoice(): void {
       }
     },
     onResponse(text) {
-      statusEl!.style.opacity = '0';
       console.log('[voice] Response:', text);
     },
-    onThinking() {
-      statusEl!.textContent = 'Thinking...';
-      statusEl!.style.opacity = '1';
-    },
-    onSpeaking(playing) {
-      if (playing) {
-        statusEl!.textContent = '\u266A Speaking';
-        statusEl!.style.opacity = '1';
-      } else {
-        statusEl!.style.opacity = '0';
-      }
+    onStateChange(state) {
+      updateVoiceUI(state);
     },
     onError(message) {
       console.error('[voice] Error:', message);
@@ -918,47 +947,65 @@ function initVoice(): void {
     onConnected(connected) {
       connDot.style.background = connected ? '#44ff88' : '#ff4466';
     },
+    onCommand(cmd) {
+      console.log('[voice] Command:', cmd);
+      handleVoiceCommand(cmd);
+    },
   });
 
   voiceClient.connect();
 
-  // Hold-to-talk events
-  micBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); voiceClient!.startRecording(); setMicRecording(true); });
-  micBtn.addEventListener('mouseup', () => { voiceClient!.stopRecording(); setMicRecording(false); });
-  micBtn.addEventListener('mouseleave', () => { if (voiceClient!.isRecording) { voiceClient!.stopRecording(); setMicRecording(false); } });
-  micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); voiceClient!.startRecording(); setMicRecording(true); });
-  micBtn.addEventListener('touchend', (e) => { e.preventDefault(); voiceClient!.stopRecording(); setMicRecording(false); });
-  micBtn.addEventListener('touchcancel', () => { voiceClient!.stopRecording(); setMicRecording(false); });
+  // Click to toggle conversation mode
+  micBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    voiceClient!.toggleConversation();
+  });
 
-  // Spacebar hold-to-talk (when no terminal focused)
+  // Spacebar toggle (when no terminal focused)
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !focusedPane && !e.repeat) {
       e.preventDefault();
-      voiceClient!.startRecording();
-      setMicRecording(true);
-    }
-  });
-  window.addEventListener('keyup', (e) => {
-    if (e.code === 'Space' && voiceClient!.isRecording) {
-      e.preventDefault();
-      voiceClient!.stopRecording();
-      setMicRecording(false);
+      voiceClient!.toggleConversation();
     }
   });
 }
 
-function setMicRecording(recording: boolean): void {
-  if (!micBtn) return;
-  if (recording) {
-    micBtn.style.background = '#ff4466';
-    micBtn.style.borderColor = '#ff4466';
-    micBtn.style.color = 'white';
-    micBtn.style.boxShadow = '0 0 20px rgba(255,68,102,0.4)';
-  } else {
-    micBtn.style.background = 'rgba(0,0,0,0.5)';
-    micBtn.style.borderColor = 'rgba(255,255,255,0.15)';
-    micBtn.style.color = 'rgba(255,255,255,0.6)';
-    micBtn.style.boxShadow = 'none';
+function updateVoiceUI(state: string): void {
+  if (!micBtn || !statusEl) return;
+
+  switch (state) {
+    case 'idle':
+      micBtn.style.background = 'rgba(0,0,0,0.5)';
+      micBtn.style.borderColor = 'rgba(255,255,255,0.15)';
+      micBtn.style.color = 'rgba(255,255,255,0.6)';
+      micBtn.style.boxShadow = 'none';
+      statusEl.style.opacity = '0';
+      break;
+    case 'listening':
+      micBtn.style.background = '#ff4466';
+      micBtn.style.borderColor = '#ff4466';
+      micBtn.style.color = 'white';
+      micBtn.style.boxShadow = '0 0 20px rgba(255,68,102,0.4)';
+      statusEl.textContent = '\uD83C\uDFA4 Listening...';
+      statusEl.style.opacity = '1';
+      break;
+    case 'processing':
+      micBtn.style.background = '#4466ff';
+      micBtn.style.borderColor = '#4466ff';
+      micBtn.style.color = 'white';
+      micBtn.style.boxShadow = '0 0 20px rgba(68,102,255,0.4)';
+      statusEl.textContent = 'Thinking...';
+      statusEl.style.opacity = '1';
+      break;
+    case 'speaking':
+      micBtn.style.background = '#44bb88';
+      micBtn.style.borderColor = '#44bb88';
+      micBtn.style.color = 'white';
+      micBtn.style.boxShadow = '0 0 20px rgba(68,187,136,0.4)';
+      statusEl.textContent = '\u266A Speaking';
+      statusEl.style.opacity = '1';
+      break;
   }
 }
 

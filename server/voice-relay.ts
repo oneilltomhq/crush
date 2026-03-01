@@ -86,23 +86,60 @@ function writeTodoFile(content: string): void {
 
 function buildSystemPrompt(): string {
   const todo = readTodoFile();
-  return `You are a conversational voice assistant for the crush workspace — a 3D desktop environment built with Three.js and WebGL. You help the user manage tasks, brainstorm, and control their workspace.
+  return `You are the voice assistant for Crush — a 3D spatial workspace built with Three.js/WebGPU. You help the user manage their workspace through natural conversation.
 
-Keep your responses concise and natural — this is a voice conversation, not a text chat. Aim for 1-3 sentences unless the user asks for something detailed. Don't use markdown formatting, bullet points, or numbered lists in your speech — just talk naturally.
+You're in conversational mode — after you speak, the mic automatically resumes listening. Keep responses SHORT and natural (1-3 sentences). No markdown, no bullet lists, no numbered lists — just talk like a person.
 
-You have access to the user's todo list. Here is the current content:
+## The Workspace
+
+Crush renders a spatial grid of panes in 3D. Each pane is a task node backed by a resource:
+- **PTY panes**: real shell sessions on the server (bash via WebSocket)
+- **Terminal panes**: local WASM terminals (Ghostty VT emulation)
+- **Browser panes**: live browser tab streams via CDP screencast
+- **Task panes**: labeled cards for organizing work
+
+The pane system is a task graph — tasks can have children, forming a hierarchy. Users can "dive into" a parent task to see its subtasks as panes, and navigate back up with Escape.
+
+Current keyboard shortcuts:
+- P: create a PTY shell pane
+- A: add a task pane
+- B: add a browser pane
+- S: split/decompose focused pane into subtasks
+- X: complete and remove focused pane
+- D: run demo sequence
+- Click: focus a pane (zoom in)
+- Click focused: dive into children (if any)
+- Escape: zoom out / navigate up
+
+You can issue commands to control the workspace by including a commands block at the END of your response:
+
+<workspace_commands>
+{"action": "create_task", "label": "Research API design"}
+{"action": "create_pty", "label": "Shell"}
+{"action": "create_browser", "label": "Browser"}
+</workspace_commands>
+
+Available actions:
+- create_task: Create a labeled task pane. Fields: label (string), parentId? (string)
+- create_pty: Create a PTY shell pane. Fields: label (string)
+- create_browser: Create a browser pane. Fields: label (string)
+- complete_task: Complete and remove a task. Fields: taskId (string) OR label (string)
+
+Only include the commands block when the user asks you to manipulate the workspace. Each line in the block is a separate JSON command.
+
+## Todo List
+
+You have access to the user's todo file:
 
 ---
 ${todo}
 ---
 
-When the user asks you to update, add, remove, or modify tasks on their todo list, respond with the updated content wrapped in a special block:
+To update it, include at the END of your response (after any workspace_commands):
 
 <todo_update>
-(entire updated todo.md content here)
+(entire updated todo.md content)
 </todo_update>
-
-Include this block at the END of your response, after your spoken reply. The block will be parsed and the file updated automatically — the user won't see the raw block.
 
 Today's date is ${new Date().toISOString().split('T')[0]}.`;
 }
@@ -144,12 +181,41 @@ async function callLLM(
     .join('\n');
 }
 
-function extractTodoUpdate(response: string): { spoken: string; todoContent: string | null } {
-  const match = response.match(/<todo_update>\s*([\s\S]*?)\s*<\/todo_update>/);
-  if (!match) return { spoken: response.trim(), todoContent: null };
-  const todoContent = match[1].trim();
-  const spoken = response.replace(/<todo_update>[\s\S]*?<\/todo_update>/, '').trim();
-  return { spoken, todoContent };
+interface ParsedResponse {
+  spoken: string;
+  todoContent: string | null;
+  commands: Record<string, unknown>[];
+}
+
+function parseResponse(response: string): ParsedResponse {
+  let text = response;
+  let todoContent: string | null = null;
+  const commands: Record<string, unknown>[] = [];
+
+  // Extract todo update
+  const todoMatch = text.match(/<todo_update>\s*([\s\S]*?)\s*<\/todo_update>/);
+  if (todoMatch) {
+    todoContent = todoMatch[1].trim();
+    text = text.replace(/<todo_update>[\s\S]*?<\/todo_update>/, '');
+  }
+
+  // Extract workspace commands
+  const cmdMatch = text.match(/<workspace_commands>\s*([\s\S]*?)\s*<\/workspace_commands>/);
+  if (cmdMatch) {
+    const lines = cmdMatch[1].trim().split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        commands.push(JSON.parse(trimmed));
+      } catch (e) {
+        console.error('[voice] Failed to parse command:', trimmed);
+      }
+    }
+    text = text.replace(/<workspace_commands>[\s\S]*?<\/workspace_commands>/, '');
+  }
+
+  return { spoken: text.trim(), todoContent, commands };
 }
 
 // ---------------------------------------------------------------------------
@@ -185,13 +251,21 @@ async function processText(conn: Connection, userText: string): Promise<void> {
 
     send(conn.ws, { type: 'thinking' });
     const rawResponse = await callLLM(buildSystemPrompt(), conn.conversationHistory);
-    const { spoken, todoContent } = extractTodoUpdate(rawResponse);
+    const { spoken, todoContent, commands } = parseResponse(rawResponse);
 
     if (todoContent) writeTodoFile(todoContent);
 
     conn.conversationHistory.push({ role: 'assistant', content: spoken });
     send(conn.ws, { type: 'response', text: spoken });
     console.log(`[voice:${conn.id}] Response: "${spoken.substring(0, 80)}${spoken.length > 80 ? '...' : ''}"`);
+
+    // Forward workspace commands to client
+    if (commands.length > 0) {
+      console.log(`[voice:${conn.id}] Sending ${commands.length} workspace command(s)`);
+      for (const cmd of commands) {
+        send(conn.ws, { type: 'command' as any, ...cmd });
+      }
+    }
   } catch (err: any) {
     console.error(`[voice:${conn.id}] Error:`, err.message);
     send(conn.ws, { type: 'error', message: err.message });
