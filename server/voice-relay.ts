@@ -21,6 +21,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { AgentRunner, type RunnerStatus } from './agent-runner';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -122,6 +123,30 @@ Workflow: open URL → snapshot -i to see interactive elements → click/type us
     },
   },
   {
+    name: 'research',
+    description: `Launch a background research agent that autonomously browses the web, collects information, and builds a research document. Use when the user asks to research a topic, investigate something, or find information that requires visiting multiple pages.
+
+The researcher works in the background — you stay responsive to the user. It creates a notes pane and optionally browser panes showing key pages.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        goal: {
+          type: 'string',
+          description: 'What to research. Be specific — include the user\'s actual question/interest, any constraints, and what kind of output they want.',
+        },
+      },
+      required: ['goal'],
+    },
+  },
+  {
+    name: 'research_status',
+    description: 'Check on running research agents. Use when the user asks how research is going.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
     name: 'update_todo',
     description: 'Replace the todo list with updated content. Use when the user asks to add, remove, or modify todo items.',
     input_schema: {
@@ -161,6 +186,7 @@ interface Connection {
   id: string;
   history: ConversationMessage[];
   processing: boolean;
+  runners: AgentRunner[];
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +265,8 @@ The workspace starts empty. Create panes only when the user asks or when it's cl
 - One pane per clear user intent — don't over-create.
 - The workspace should stay clean and purposeful.
 - When browsing, use browse tool: "open <url>" to navigate, "snapshot -i" to see interactive elements, "click @ref" to interact, "snapshot" for full page content. Always snapshot after navigating to see what loaded.
+- For research tasks (finding information, investigating topics, comparing options), use the research tool — it launches a background agent that does thorough multi-page research autonomously. Don't try to research by hand with browse — delegate to the researcher.
+- You can check on research with research_status.
 
 ## Todo list
 
@@ -324,6 +352,49 @@ async function executeTool(
         ? output.substring(0, maxLen) + `\n... (truncated, ${output.length - maxLen} chars omitted)`
         : output;
       return truncated;
+    }
+    case 'research': {
+      const goal = String(input.goal);
+      const notesPaneLabel = `Research: ${goal.substring(0, 40)}${goal.length > 40 ? '...' : ''}`;
+
+      // Create the notes pane first
+      send(conn.ws, {
+        type: 'command', name: 'create_pane',
+        input: { pane_type: 'text', label: notesPaneLabel, content: `# Researching...\n\n*${goal}*\n\nStarting research agent...` },
+      });
+
+      const runner = new AgentRunner({
+        goal,
+        ws: conn.ws,
+        notesPaneLabel,
+        onComplete: (summary) => {
+          console.log(`[voice:${conn.id}] Research complete: ${summary.substring(0, 80)}`);
+          // Notify user via a response if they're not mid-conversation
+          send(conn.ws, { type: 'research_complete', runnerId: runner.id, summary });
+        },
+        onProgress: (status) => {
+          console.log(`[voice:${conn.id}] Research progress: ${status}`);
+        },
+        onError: (err) => {
+          console.error(`[voice:${conn.id}] Research error: ${err}`);
+          send(conn.ws, { type: 'research_error', runnerId: runner.id, error: err });
+        },
+      });
+
+      conn.runners.push(runner);
+      runner.start();
+
+      return `Research agent launched. It will browse the web and build findings in the "${notesPaneLabel}" pane. I'll keep working in the background — you can ask me how it's going anytime.`;
+    }
+    case 'research_status': {
+      if (conn.runners.length === 0) {
+        return 'No research agents running.';
+      }
+      const statuses = conn.runners.map(r => {
+        const s = r.getStatus();
+        return `"${s.goal.substring(0, 50)}" — ${s.state}, ${s.iterations}/${s.maxIterations} iterations, ${s.currentActivity}`;
+      });
+      return statuses.join('\n');
     }
     case 'update_todo': {
       const content = String(input.content);
@@ -480,7 +551,7 @@ function handleConnection(ws: WebSocket): void {
   const id = String(++connectionCounter);
   console.log(`[voice:${id}] Client connected`);
 
-  const conn: Connection = { ws, id, history: [], processing: false };
+  const conn: Connection = { ws, id, history: [], processing: false, runners: [] };
 
   // Send initial state + voice credentials
   send(ws, {
