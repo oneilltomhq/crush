@@ -90,26 +90,31 @@ const TOOLS = [
     },
   },
   {
-    name: 'screenshot_pane',
-    description: 'Take a screenshot of a browser pane to see what is currently displayed. Use this to read page content, verify navigation worked, or answer questions about what\'s on screen.',
+    name: 'browse',
+    description: `Control the browser tab shown in browser panes. Powered by agent-browser CLI.
+
+Common commands:
+- open <url>: Navigate to a URL
+- snapshot: Full accessibility tree (page structure + text content)
+- snapshot -i: Interactive elements only (links, buttons, inputs) with refs
+- click @<ref>: Click an element by ref from snapshot
+- type @<ref> <text>: Type into an input
+- fill @<ref> <text>: Clear and fill an input
+- scroll down/up [px]: Scroll the page
+- press Enter/Tab/Escape: Press a key
+- get text @<ref>: Get text content of an element
+- screenshot: Take a screenshot (returns image)
+
+Workflow: open URL → snapshot -i to see interactive elements → click/type using @refs → snapshot again to see result.`,
     input_schema: {
       type: 'object' as const,
       properties: {
-        label: { type: 'string', description: 'Label of the browser pane to screenshot' },
+        command: {
+          type: 'string',
+          description: 'agent-browser command and arguments, e.g. "open https://example.com" or "snapshot -i" or "click @e3"',
+        },
       },
-      required: ['label'],
-    },
-  },
-  {
-    name: 'navigate_pane',
-    description: 'Navigate a browser pane to a URL.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        label: { type: 'string', description: 'Label of the browser pane' },
-        url: { type: 'string', description: 'URL to navigate to' },
-      },
-      required: ['label', 'url'],
+      required: ['command'],
     },
   },
   {
@@ -155,52 +160,34 @@ interface Connection {
 }
 
 // ---------------------------------------------------------------------------
-// CDP screenshot — grab page screenshot directly from Chrome
+// agent-browser — structured browser automation via CLI
 // ---------------------------------------------------------------------------
 
-import { WebSocket as WsClient } from 'ws';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 
-async function cdpScreenshot(): Promise<string | null> {
+let cdpWsUrl: string | null = null;
+
+async function getCdpWsUrl(): Promise<string> {
+  if (cdpWsUrl) return cdpWsUrl;
+  const res = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/version`);
+  const data: any = await res.json();
+  cdpWsUrl = data.webSocketDebuggerUrl;
+  return cdpWsUrl!;
+}
+
+async function runAgentBrowser(args: string[]): Promise<string> {
+  const wsUrl = await getCdpWsUrl();
   try {
-    // Find active page tab
-    const listRes = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
-    const tabs: any[] = await listRes.json();
-    const page = tabs.find((t: any) =>
-      t.type === 'page' &&
-      !t.url.startsWith('chrome://') &&
-      !t.url.startsWith('chrome-extension://') &&
-      !t.url.startsWith('devtools://')
+    const { stdout, stderr } = await execFileAsync(
+      'agent-browser', ['--cdp', wsUrl, ...args],
+      { timeout: 15000, maxBuffer: 1024 * 1024 },
     );
-    if (!page?.webSocketDebuggerUrl) return null;
-
-    // Connect to CDP and capture screenshot
-    return await new Promise<string | null>((resolve) => {
-      const ws = new WsClient(page.webSocketDebuggerUrl);
-      const timeout = setTimeout(() => { ws.close(); resolve(null); }, 5000);
-      ws.on('open', () => {
-        ws.send(JSON.stringify({
-          id: 1,
-          method: 'Page.captureScreenshot',
-          params: { format: 'jpeg', quality: 70 },
-        }));
-      });
-      ws.on('message', (data: Buffer) => {
-        clearTimeout(timeout);
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.id === 1 && msg.result?.data) {
-            resolve(msg.result.data); // base64 JPEG
-          } else {
-            resolve(null);
-          }
-        } catch { resolve(null); }
-        ws.close();
-      });
-      ws.on('error', () => { clearTimeout(timeout); resolve(null); });
-    });
+    return (stdout + (stderr ? `\n${stderr}` : '')).trim();
   } catch (e: any) {
-    console.error('[voice] CDP screenshot error:', e.message);
-    return null;
+    const output = (e.stdout || '') + (e.stderr || '');
+    return output.trim() || `Error: ${e.message}`;
   }
 }
 
@@ -233,7 +220,7 @@ Keep responses SHORT — 1-3 sentences, conversational. No markdown, no bullet l
 
 The workspace is a grid of panes:
 - PTY panes: real bash shell sessions
-- Browser panes: live browser tab with CDP screencast. Use screenshot_pane to see page content, navigate_pane to browse.
+- Browser panes: live browser tab with CDP screencast. Use the browse tool to interact with the page.
 - Text panes: scrollable text/markdown content
 - Task panes: labeled organizational cards
 
@@ -245,7 +232,7 @@ On startup, three panes exist: "Shell" (PTY), "Todo" (text), and "Transcript" (c
 - Never create empty shells speculatively.
 - One pane per clear user intent — don't over-create.
 - The workspace should stay clean and purposeful.
-- When browsing for the user, use screenshot_pane to see what's on the page, then describe what you see.
+- When browsing, use browse tool: "open <url>" to navigate, "snapshot -i" to see interactive elements, "click @ref" to interact, "snapshot" for full page content. Always snapshot after navigating to see what loaded.
 
 ## Todo list
 
@@ -312,24 +299,25 @@ async function executeTool(
       send(conn.ws, { type: 'command', name: 'scroll_pane', input: { label, direction, amount } });
       return `Scrolled "${label}" ${direction} (${amount}).`;
     }
-    case 'screenshot_pane': {
-      // Grab screenshot directly from Chrome via CDP
-      const b64 = await cdpScreenshot();
-      if (!b64) return 'Failed to capture screenshot — no browser tab available.';
-      console.log(`[voice] Screenshot captured (${Math.round(b64.length / 1024)}KB)`);
-      return [
-        {
-          type: 'image',
-          source: { type: 'base64', media_type: 'image/jpeg', data: b64 },
-        },
-        { type: 'text', text: 'Screenshot of the current browser tab.' },
-      ];
-    }
-    case 'navigate_pane': {
-      const label = String(input.label);
-      const url = String(input.url);
-      send(conn.ws, { type: 'command', name: 'navigate_pane', input: { label, url } });
-      return `Navigated "${label}" to ${url}.`;
+    case 'browse': {
+      const command = String(input.command || '');
+      const args = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+      // Strip quotes from args
+      const cleanArgs = args.map(a => a.replace(/^["']|["']$/g, ''));
+      console.log(`[voice] browse: ${cleanArgs.join(' ')}`);
+
+      // If it's an 'open' command, also tell the client to update the browser pane
+      if (cleanArgs[0] === 'open' && cleanArgs[1]) {
+        send(conn.ws, { type: 'command', name: 'navigate_pane', input: { label: '', url: cleanArgs[1] } });
+      }
+
+      const output = await runAgentBrowser(cleanArgs);
+      // Truncate very long output to avoid blowing context
+      const maxLen = 8000;
+      const truncated = output.length > maxLen
+        ? output.substring(0, maxLen) + `\n... (truncated, ${output.length - maxLen} chars omitted)`
+        : output;
+      return truncated;
     }
     case 'update_todo': {
       const content = String(input.content);
