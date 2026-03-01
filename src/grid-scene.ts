@@ -59,9 +59,12 @@ const browserTextures = new Map<string, BrowserTexture>();
 
 // WebSocket URLs — configurable via query params
 const params = new URLSearchParams(window.location.search);
-const RELAY_WS_URL = params.get('relay') || 'ws://localhost:8090';
-const PTY_WS_URL = params.get('pty') || 'ws://localhost:8091';
-const VOICE_WS_URL = params.get('voice') || 'ws://localhost:8092';
+// WebSocket URLs — use Vite proxy paths so connections work through exe.dev HTTPS proxy
+const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsBase = `${wsProto}//${location.host}`;
+const RELAY_WS_URL = params.get('relay') || `${wsBase}/ws/cdp`;
+const PTY_WS_URL = params.get('pty') || `${wsBase}/ws/pty`;
+const VOICE_WS_URL = params.get('voice') || `${wsBase}/ws/voice`;
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let focusedPane: Pane | null = null;

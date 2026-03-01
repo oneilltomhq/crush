@@ -6,7 +6,11 @@
  * streams it to the voice relay, and plays back TTS audio.
  */
 
-const VOICE_WS_URL_DEFAULT = 'ws://localhost:8092';
+// Use relative path — Vite proxies /ws/voice to the voice relay server
+function defaultVoiceWsUrl(): string {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}/ws/voice`;
+}
 
 // --- Protocol types ---
 
@@ -55,7 +59,7 @@ export class VoiceClient {
 
   constructor(opts: VoiceClientOptions = {}) {
     this.opts = opts;
-    this.wsUrl = opts.wsUrl ?? VOICE_WS_URL_DEFAULT;
+    this.wsUrl = opts.wsUrl ?? defaultVoiceWsUrl();
   }
 
   // --- Public API ---

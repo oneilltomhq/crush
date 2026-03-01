@@ -17,6 +17,26 @@ export default defineConfig({
   server: {
     port: 3000,
     allowedHosts: ['valley-silver.exe.xyz'],
+    proxy: {
+      '/ws/pty': {
+        target: 'ws://localhost:8091',
+        ws: true,
+        rewriteWsOrigin: true,
+        rewrite: () => '/',
+      },
+      '/ws/voice': {
+        target: 'ws://localhost:8092',
+        ws: true,
+        rewriteWsOrigin: true,
+        rewrite: () => '/',
+      },
+      '/ws/cdp': {
+        target: 'ws://localhost:8090',
+        ws: true,
+        rewriteWsOrigin: true,
+        rewrite: () => '/',
+      },
+    },
   },
   assetsInclude: ['**/*.wasm'],
   publicDir: false,
