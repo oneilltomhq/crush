@@ -81,6 +81,7 @@ async function init() {
 
   // Events
   renderer.domElement.addEventListener('click', onClick);
+  renderer.domElement.addEventListener('touchend', onTouch);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('resize', onResize);
 
@@ -287,10 +288,21 @@ function tick(_time: number): void {
 
 // --- Interaction ---
 
+function onTouch(event: TouchEvent): void {
+  event.preventDefault();
+  const touch = event.changedTouches[0];
+  if (!touch) return;
+  handlePointer(touch.clientX, touch.clientY);
+}
+
 function onClick(event: MouseEvent): void {
+  handlePointer(event.clientX, event.clientY);
+}
+
+function handlePointer(clientX: number, clientY: number): void {
   const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
   raycaster.setFromCamera(mouse, camera);
   const meshes = panes.map(p => p.mesh);
