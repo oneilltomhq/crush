@@ -14,9 +14,9 @@ import * as THREE from 'three/webgpu';
 export interface BrowserTextureOptions {
   /** WebSocket URL of the CDP relay server */
   wsUrl: string;
-  /** Canvas width (default: 640, matching terminal pane) */
+  /** Canvas width (default: 768) */
   width?: number;
-  /** Canvas height (default: 384, matching terminal pane) */
+  /** Canvas height (default: 432, 16:9 to match CDP screencast) */
   height?: number;
 }
 
@@ -42,8 +42,8 @@ export class BrowserTexture {
   get tabUrl(): string { return this.meta.url || ''; }
 
   constructor(private options: BrowserTextureOptions) {
-    const w = options.width || 640;
-    const h = options.height || 384;
+    const w = options.width || 768;
+    const h = options.height || 432;
 
     this.canvas = document.createElement('canvas');
     this.canvas.width = w;
@@ -118,8 +118,24 @@ export class BrowserTexture {
         URL.revokeObjectURL(url);
         return;
       }
-      // Draw scaled to fit our canvas
-      this.ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
+
+      const cw = this.canvas.width;
+      const ch = this.canvas.height;
+      const iw = img.naturalWidth;
+      const ih = img.naturalHeight;
+
+      // Aspect-fit: scale to fill canvas width, center vertically
+      const scale = cw / iw;
+      const drawH = ih * scale;
+      const dy = (ch - drawH) / 2;
+
+      // Clear letterbox bars
+      if (dy > 0) {
+        this.ctx.fillStyle = '#0a0a1a';
+        this.ctx.fillRect(0, 0, cw, ch);
+      }
+
+      this.ctx.drawImage(img, 0, dy, cw, drawH);
       this.texture.needsUpdate = true;
       URL.revokeObjectURL(url);
 

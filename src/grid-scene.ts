@@ -26,6 +26,7 @@ import { TerminalTexture } from './terminal-texture';
 import { PtyTexture } from './pty-texture';
 import { BrowserTexture } from './browser-texture';
 import { VoiceClient } from './voice-client';
+import { TextTexture } from './text-texture';
 
 // --- Dimensions ---
 const PANE_W = 48;
@@ -56,6 +57,7 @@ let ghosttyInstance: Ghostty | null = null;
 const termTextures = new Map<string, TerminalTexture>();
 const ptyTextures = new Map<string, PtyTexture>();
 const browserTextures = new Map<string, BrowserTexture>();
+const textTextures = new Map<string, TextTexture>();
 
 // WebSocket URLs — configurable via query params
 const params = new URLSearchParams(window.location.search);
@@ -211,6 +213,17 @@ function addPaneForTask(task: TaskNode): void {
       browserTextures.set(task.id, browserTex);
     }
     mat = new THREE.MeshBasicNodeMaterial({ map: browserTex.texture });
+  } else if (task.resource?.type === 'editor') {
+    // Text content pane — renders markdown/text onto a canvas
+    let textTex = textTextures.get(task.id);
+    if (!textTex) {
+      const content = task.resource.uri.startsWith('content://')
+        ? decodeURIComponent(task.resource.uri.slice('content://'.length))
+        : '';
+      textTex = new TextTexture({ content, title: task.label });
+      textTextures.set(task.id, textTex);
+    }
+    mat = new THREE.MeshBasicNodeMaterial({ map: textTex.texture });
   } else {
     mat = new THREE.MeshBasicNodeMaterial({ color });
   }
@@ -219,7 +232,7 @@ function addPaneForTask(task: TaskNode): void {
   mesh.userData.taskId = task.id;
 
   // Label overlay (only for non-resource panes)
-  if (!task.resource || (task.resource.type !== 'terminal' && task.resource.type !== 'pty' && task.resource.type !== 'browser')) {
+  if (!task.resource || (task.resource.type !== 'terminal' && task.resource.type !== 'pty' && task.resource.type !== 'browser' && task.resource.type !== 'editor')) {
     const labelMesh = makeLabel(task.label, idx + 1);
     labelMesh.position.set(0, 0, 0.1);
     mesh.add(labelMesh);
@@ -253,6 +266,9 @@ function removePaneForTask(taskId: string): void {
 
   const browserTex = browserTextures.get(taskId);
   if (browserTex) { browserTex.dispose(); browserTextures.delete(taskId); }
+
+  const textTex = textTextures.get(taskId);
+  if (textTex) { textTex.dispose(); textTextures.delete(taskId); }
 
   scene.remove(pane.mesh);
   scene.remove(pane.border);
@@ -950,6 +966,17 @@ function initVoice(): void {
     onCommand(cmd) {
       console.log('[voice] Command:', cmd);
       handleVoiceCommand(cmd);
+    },
+    onInit(data) {
+      if (data.todo) {
+        // Create a todo pane with the content rendered as text
+        const content = data.todo;
+        const resource: ResourceDescriptor = {
+          type: 'editor',
+          uri: `content://${encodeURIComponent(content)}`,
+        };
+        taskGraph.createTask('Todo', currentParentId ?? undefined, resource);
+      }
     },
   });
 

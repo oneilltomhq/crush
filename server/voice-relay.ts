@@ -115,17 +115,29 @@ You can issue commands to control the workspace by including a commands block at
 
 <workspace_commands>
 {"action": "create_task", "label": "Research API design"}
-{"action": "create_pty", "label": "Shell"}
-{"action": "create_browser", "label": "Browser"}
 </workspace_commands>
 
 Available actions:
 - create_task: Create a labeled task pane. Fields: label (string), parentId? (string)
-- create_pty: Create a PTY shell pane. Fields: label (string)
+- create_pty: Create a PTY shell pane. Fields: label (string), command? (string — command to run in the shell)
 - create_browser: Create a browser pane. Fields: label (string)
 - complete_task: Complete and remove a task. Fields: taskId (string) OR label (string)
 
-Only include the commands block when the user asks you to manipulate the workspace. Each line in the block is a separate JSON command.
+RULES for workspace commands:
+- ONLY create panes when the user explicitly asks for them.
+- NEVER create empty/idle shells. If you create a PTY, it must have a purpose (running a command, editing a file, etc.).
+- NEVER speculatively create multiple panes "just in case." One pane per clear user intent.
+- The todo list is already shown as a pane on startup — don't recreate it.
+- Prefer doing less over doing more. The workspace should be clean and purposeful.
+- Each line in the commands block is a separate JSON command.
+
+## Current Workspace State
+
+On startup, the workspace automatically creates:
+- A Shell pane (PTY, already running bash)
+- A Todo pane (showing the todo list below)
+
+These already exist — don't recreate them.
 
 ## Todo List
 
@@ -290,6 +302,10 @@ function handleConnection(ws: WebSocket): void {
     conversationHistory: [],
     processing: false,
   };
+
+  // Send initial workspace state (todo content) on connect
+  const todoContent = readTodoFile();
+  send(ws, { type: 'init' as any, todo: todoContent });
 
   ws.on('message', async (raw: Buffer | string) => {
     let msg: ClientMessage;

@@ -38,13 +38,15 @@ export interface VoiceClientOptions {
   onError?: (message: string) => void;
   onConnected?: (connected: boolean) => void;
   onCommand?: (command: { action: string; [key: string]: unknown }) => void;
+  onInit?: (data: { todo?: string }) => void;
 }
 
 type ServerMessage =
   | { type: 'response'; text: string }
   | { type: 'thinking' }
   | { type: 'error'; message: string }
-  | { type: 'command'; action: string; [key: string]: unknown };
+  | { type: 'command'; action: string; [key: string]: unknown }
+  | { type: 'init'; todo?: string };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -376,6 +378,10 @@ export class VoiceClient {
 
       case 'command':
         this.opts.onCommand?.(msg);
+        break;
+
+      case 'init':
+        this.opts.onInit?.({ todo: msg.todo });
         break;
     }
   }
