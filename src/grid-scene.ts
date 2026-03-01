@@ -403,9 +403,11 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
         case 'pty':
           resource = { type: 'pty', uri: `pty://${PTY_WS_URL}` };
           break;
-        case 'browser':
-          resource = { type: 'browser', uri: 'cdp://remote/tab/live' };
+        case 'browser': {
+          const url = String(input.url || '');
+          resource = { type: 'browser', uri: `cdp://remote/tab/live${url ? '?' + encodeURIComponent(url) : ''}` };
           break;
+        }
         case 'text':
           resource = {
             type: 'editor',
@@ -417,6 +419,13 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
 
       const newTask = taskGraph.createTask(label, currentParentId ?? undefined, resource);
       flashPane(newTask.id);
+      // Navigate browser pane to URL if provided
+      if (paneType === 'browser' && input.url) {
+        const bp = taskPaneMap.get(newTask.id);
+        if (bp instanceof BrowserPane) {
+          bp.browserTexture.navigate(String(input.url));
+        }
+      }
       console.log(`[cmd] create_pane: ${paneType} "${label}"`);
       break;
     }
@@ -460,6 +469,20 @@ function handleCommand(cmd: { name: string; input: Record<string, unknown> }): v
         console.log(`[cmd] scroll_pane: "${targetPane.label}" ${direction} ${amount}`);
       } else {
         console.warn(`[cmd] scroll_pane: no text pane matching "${label}"`);
+      }
+      break;
+    }
+
+    case 'navigate_pane': {
+      const label = String(input.label || '').toLowerCase();
+      const url = String(input.url || '');
+      for (const [, pane] of taskPaneMap) {
+        if (pane.label.toLowerCase().includes(label) && pane instanceof BrowserPane) {
+          pane.browserTexture.navigate(url);
+          flashPane(pane.taskId);
+          console.log(`[cmd] navigate_pane: "${pane.label}" → ${url}`);
+          break;
+        }
       }
       break;
     }

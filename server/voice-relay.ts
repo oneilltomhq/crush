@@ -52,6 +52,7 @@ const TOOLS = [
         },
         label: { type: 'string', description: 'Display label for the pane' },
         command: { type: 'string', description: 'For pty panes only: initial command to run in the shell' },
+        url: { type: 'string', description: 'For browser panes only: URL to navigate to' },
         content: { type: 'string', description: 'For text panes only: text content to display' },
       },
       required: ['pane_type', 'label'],
@@ -83,6 +84,18 @@ const TOOLS = [
         },
       },
       required: ['label', 'direction'],
+    },
+  },
+  {
+    name: 'navigate_pane',
+    description: 'Navigate a browser pane to a URL.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        label: { type: 'string', description: 'Label of the browser pane' },
+        url: { type: 'string', description: 'URL to navigate to' },
+      },
+      required: ['label', 'url'],
     },
   },
   {
@@ -219,7 +232,7 @@ function executeTool(
     case 'create_pane': {
       const paneType = String(input.pane_type);
       const label = String(input.label);
-      send(conn.ws, { type: 'command', name: 'create_pane', input: { pane_type: paneType, label, command: input.command, content: input.content } });
+      send(conn.ws, { type: 'command', name: 'create_pane', input: { pane_type: paneType, label, command: input.command, url: input.url, content: input.content } });
       return `Created ${paneType} pane "${label}".`;
     }
     case 'remove_pane': {
@@ -233,6 +246,12 @@ function executeTool(
       const amount = String(input.amount || 'medium');
       send(conn.ws, { type: 'command', name: 'scroll_pane', input: { label, direction, amount } });
       return `Scrolled "${label}" ${direction} (${amount}).`;
+    }
+    case 'navigate_pane': {
+      const label = String(input.label);
+      const url = String(input.url);
+      send(conn.ws, { type: 'command', name: 'navigate_pane', input: { label, url } });
+      return `Navigated "${label}" to ${url}.`;
     }
     case 'update_todo': {
       const content = String(input.content);
