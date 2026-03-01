@@ -1,24 +1,23 @@
 /**
- * TextTexture — renders static text content (e.g. markdown todo lists)
- * onto a Canvas2D, exposed as a THREE.CanvasTexture for use as a pane surface.
+ * TextTexture — renders scrollable text content (e.g. markdown todo lists)
+ * onto a Canvas2D, exposed as a THREE.CanvasTexture for pane surfaces.
  *
- * Canvas auto-sizes vertically to fit all content (no clipping).
- *
- * Supports basic markdown-like formatting:
- *   - `# Header` lines rendered larger/bolder
- *   - `- [ ]` / `- [x]` rendered as checkbox glyphs
- *   - Plain text with automatic line wrapping
+ * Architecture:
+ *   - Full content is rendered once onto a tall offscreen canvas.
+ *   - A fixed-size viewport canvas (matching pane aspect) is exposed as the texture.
+ *   - scrollY controls which slice of the full canvas is visible.
+ *   - Scroll via scroll() / scrollTo(); the scene wires mouse-wheel.
  */
 
 import * as THREE from 'three/webgpu';
 
 export interface TextTextureOptions {
-  /** The text content to render */
   content: string;
-  /** Optional title shown in a top bar */
   title?: string;
-  /** Canvas width  (default 640) */
+  /** Viewport width  (default 640) */
   width?: number;
+  /** Viewport height (default 384) */
+  height?: number;
 }
 
 // ── Colours ──────────────────────────────────────────────────────────
@@ -27,10 +26,12 @@ const TITLE_BAR_BG = '#161b22';
 const TITLE_FG     = '#c9d1d9';
 const TEXT_FG      = '#c9d1d9';
 const HEADER_FG    = '#58a6ff';
-const CHECK_ON     = '#3fb950';   // ☑  green
-const CHECK_OFF    = '#6e7681';   // ☐  grey
+const CHECK_ON     = '#3fb950';
+const CHECK_OFF    = '#6e7681';
 const BULLET_FG    = '#6e7681';
 const HR_COLOR     = '#30363d';
+const SCROLLBAR_BG = 'rgba(255,255,255,0.05)';
+const SCROLLBAR_FG = 'rgba(255,255,255,0.15)';
 
 // ── Font sizes ───────────────────────────────────────────────────────
 const FONT_BODY    = 14;
@@ -42,39 +43,56 @@ const LINE_HEIGHT  = 1.45;
 const TITLE_BAR_H  = 28;
 const PAD_X        = 16;
 const PAD_Y        = 12;
-
-/** Parsed line with type info and pre-computed metrics. */
-interface LayoutLine {
-  type: 'header' | 'todo-on' | 'todo-off' | 'bullet' | 'blank' | 'text' | 'hr';
-  text: string;
-  fontSize: number;
-  lineH: number;
-  indent: number;       // x offset for text after glyph
-  wrappedLines: string[];
-  totalH: number;       // total height this block occupies
-  gapBefore: number;
-  gapAfter: number;
-}
+const SCROLLBAR_W  = 4;
 
 export class TextTexture {
   readonly texture: THREE.CanvasTexture;
+
+  /** The viewport canvas (fixed size, used as texture source). */
   readonly canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private w: number;
+  private vpCtx: CanvasRenderingContext2D;
+  private vpW: number;
+  private vpH: number;
+
+  /** The full-content offscreen canvas. */
+  private fullCanvas: HTMLCanvasElement;
+  private fullCtx: CanvasRenderingContext2D;
+  private fullH = 0;        // total content height
+
   private title: string;
   private content: string;
+  private _scrollY = 0;     // pixels scrolled from top
+  private _titleH = 0;      // title bar height (drawn on viewport, not scrolled)
+
+  /** Maximum scrollY value. */
+  get maxScroll(): number { return Math.max(0, this.fullH - this.scrollableH); }
+
+  /** Height of the scrollable region (viewport minus title bar). */
+  private get scrollableH(): number { return this.vpH - this._titleH; }
+
+  get scrollY(): number { return this._scrollY; }
 
   constructor(options: TextTextureOptions) {
-    this.w = options.width || 640;
+    this.vpW = options.width || 640;
+    this.vpH = options.height || 384;
     this.title = options.title || '';
     this.content = options.content;
+    this._titleH = this.title ? TITLE_BAR_H : 0;
 
+    // Viewport canvas (texture source)
     this.canvas = document.createElement('canvas');
-    this.canvas.width = this.w;
-    this.canvas.height = 1;  // will be resized by render()
-    this.ctx = this.canvas.getContext('2d')!;
+    this.canvas.width = this.vpW;
+    this.canvas.height = this.vpH;
+    this.vpCtx = this.canvas.getContext('2d')!;
 
-    this.render();
+    // Full content canvas (offscreen, tall)
+    this.fullCanvas = document.createElement('canvas');
+    this.fullCanvas.width = this.vpW;
+    this.fullCanvas.height = 1; // resized by renderFull()
+    this.fullCtx = this.fullCanvas.getContext('2d')!;
+
+    this.renderFull();
+    this.blit();
 
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.minFilter = THREE.LinearFilter;
@@ -86,46 +104,126 @@ export class TextTexture {
 
   updateContent(content: string): void {
     this.content = content;
-    this.render();
+    this.renderFull();
+    this._scrollY = Math.min(this._scrollY, this.maxScroll);
+    this.blit();
     this.texture.needsUpdate = true;
   }
 
-  update(_time: number): void { /* static content */ }
+  /** Scroll by delta pixels. Positive = down. */
+  scroll(dy: number): void {
+    const prev = this._scrollY;
+    this._scrollY = Math.max(0, Math.min(this.maxScroll, this._scrollY + dy));
+    if (this._scrollY !== prev) {
+      this.blit();
+      this.texture.needsUpdate = true;
+    }
+  }
+
+  scrollTo(y: number): void {
+    this.scroll(y - this._scrollY);
+  }
+
+  update(_time: number): void { /* static */ }
 
   dispose(): void {
     this.texture.dispose();
   }
 
-  // ── Rendering ─────────────────────────────────────────────────────
+  // ── Full content render (offscreen) ───────────────────────────────
 
-  private render(): void {
-    const ctx = this.ctx;
-    const w = this.w;
+  private renderFull(): void {
+    const w = this.vpW;
+    const ctx = this.fullCtx;
 
-    // 1) Parse and measure all lines
+    // Measure
+    // We need a context for measureText — use a temp 1px canvas
+    ctx.font = `${FONT_BODY}px monospace`;
     const blocks = this.measureContent(ctx, w);
 
-    // 2) Compute total height
-    const titleH = this.title ? TITLE_BAR_H + PAD_Y : PAD_Y;
-    let totalH = titleH;
-    for (const b of blocks) {
-      totalH += b.gapBefore + b.totalH + b.gapAfter;
-    }
-    totalH += PAD_Y; // bottom padding
+    let totalH = PAD_Y;
+    for (const b of blocks) totalH += b.gapBefore + b.totalH + b.gapAfter;
+    totalH += PAD_Y;
 
-    // 3) Resize canvas to fit
-    this.canvas.height = totalH;
-    // getContext after resize (canvas clears)
-    this.ctx = this.canvas.getContext('2d')!;
-    const dc = this.ctx;
+    // Resize full canvas
+    this.fullCanvas.height = totalH;
+    this.fullH = totalH;
+    this.fullCtx = this.fullCanvas.getContext('2d')!;
+    const dc = this.fullCtx;
 
-    // 4) Draw background
+    // Background
     dc.fillStyle = BG;
     dc.fillRect(0, 0, w, totalH);
 
-    let y = 0;
+    dc.textAlign = 'left';
+    dc.textBaseline = 'top';
+    let y = PAD_Y;
 
-    // 5) Title bar
+    for (const b of blocks) {
+      y += b.gapBefore;
+      switch (b.type) {
+        case 'header':
+          dc.fillStyle = HEADER_FG;
+          dc.font = `bold ${b.fontSize}px monospace`;
+          for (const line of b.wrappedLines) { dc.fillText(line, PAD_X, y); y += b.lineH; }
+          break;
+        case 'todo-on':
+          dc.font = `${FONT_BODY}px monospace`;
+          dc.fillStyle = CHECK_ON;
+          dc.fillText('\u2611', PAD_X, y);
+          dc.fillStyle = '#484f58';
+          for (const line of b.wrappedLines) { dc.fillText(line, b.indent, y); y += b.lineH; }
+          break;
+        case 'todo-off':
+          dc.font = `${FONT_BODY}px monospace`;
+          dc.fillStyle = CHECK_OFF;
+          dc.fillText('\u2610', PAD_X, y);
+          dc.fillStyle = TEXT_FG;
+          for (const line of b.wrappedLines) { dc.fillText(line, b.indent, y); y += b.lineH; }
+          break;
+        case 'bullet':
+          dc.font = `${FONT_BODY}px monospace`;
+          dc.fillStyle = BULLET_FG;
+          dc.fillText('\u2022', PAD_X, y);
+          dc.fillStyle = TEXT_FG;
+          for (const line of b.wrappedLines) { dc.fillText(line, b.indent, y); y += b.lineH; }
+          break;
+        case 'hr':
+          dc.strokeStyle = HR_COLOR;
+          dc.lineWidth = 1;
+          dc.beginPath();
+          dc.moveTo(PAD_X, y + b.lineH / 2);
+          dc.lineTo(w - PAD_X, y + b.lineH / 2);
+          dc.stroke();
+          y += b.lineH;
+          break;
+        case 'blank':
+          y += b.totalH;
+          break;
+        case 'text':
+          dc.fillStyle = TEXT_FG;
+          dc.font = `${FONT_BODY}px monospace`;
+          for (const line of b.wrappedLines) { dc.fillText(line, PAD_X, y); y += b.lineH; }
+          break;
+      }
+      y += b.gapAfter;
+    }
+  }
+
+  // ── Blit visible window to viewport canvas ────────────────────────
+
+  private blit(): void {
+    const dc = this.vpCtx;
+    const w = this.vpW;
+    const h = this.vpH;
+    const titleH = this._titleH;
+    const contentH = h - titleH;
+
+    // Clear
+    dc.fillStyle = BG;
+    dc.fillRect(0, 0, w, h);
+
+    // Title bar (fixed, not scrolled)
     if (this.title) {
       dc.fillStyle = TITLE_BAR_BG;
       dc.fillRect(0, 0, w, TITLE_BAR_H);
@@ -150,87 +248,37 @@ export class TextTexture {
       dc.moveTo(0, TITLE_BAR_H - 0.5);
       dc.lineTo(w, TITLE_BAR_H - 0.5);
       dc.stroke();
-
-      y = TITLE_BAR_H + PAD_Y;
-    } else {
-      y = PAD_Y;
     }
 
-    dc.textAlign = 'left';
-    dc.textBaseline = 'top';
+    // Blit scrolled content region
+    if (this.fullH > 0) {
+      dc.drawImage(
+        this.fullCanvas,
+        0, this._scrollY, w, contentH,   // source rect
+        0, titleH, w, contentH,           // dest rect
+      );
+    }
 
-    // 6) Draw content blocks
-    for (const b of blocks) {
-      y += b.gapBefore;
+    // Scrollbar (only if content overflows)
+    if (this.fullH > contentH) {
+      const trackX = w - SCROLLBAR_W - 2;
+      const trackH = contentH - 4;
+      const trackY = titleH + 2;
 
-      switch (b.type) {
-        case 'header':
-          dc.fillStyle = HEADER_FG;
-          dc.font = `bold ${b.fontSize}px monospace`;
-          for (const line of b.wrappedLines) {
-            dc.fillText(line, PAD_X, y);
-            y += b.lineH;
-          }
-          break;
+      // Track
+      dc.fillStyle = SCROLLBAR_BG;
+      dc.fillRect(trackX, trackY, SCROLLBAR_W, trackH);
 
-        case 'todo-on':
-          dc.font = `${FONT_BODY}px monospace`;
-          dc.fillStyle = CHECK_ON;
-          dc.fillText('☑', PAD_X, y);
-          dc.fillStyle = '#484f58';
-          for (const line of b.wrappedLines) {
-            dc.fillText(line, b.indent, y);
-            y += b.lineH;
-          }
-          break;
+      // Thumb
+      const thumbRatio = contentH / this.fullH;
+      const thumbH = Math.max(12, trackH * thumbRatio);
+      const scrollRatio = this.maxScroll > 0 ? this._scrollY / this.maxScroll : 0;
+      const thumbY = trackY + scrollRatio * (trackH - thumbH);
 
-        case 'todo-off':
-          dc.font = `${FONT_BODY}px monospace`;
-          dc.fillStyle = CHECK_OFF;
-          dc.fillText('☐', PAD_X, y);
-          dc.fillStyle = TEXT_FG;
-          for (const line of b.wrappedLines) {
-            dc.fillText(line, b.indent, y);
-            y += b.lineH;
-          }
-          break;
-
-        case 'bullet':
-          dc.font = `${FONT_BODY}px monospace`;
-          dc.fillStyle = BULLET_FG;
-          dc.fillText('•', PAD_X, y);
-          dc.fillStyle = TEXT_FG;
-          for (const line of b.wrappedLines) {
-            dc.fillText(line, b.indent, y);
-            y += b.lineH;
-          }
-          break;
-
-        case 'hr':
-          dc.strokeStyle = HR_COLOR;
-          dc.lineWidth = 1;
-          dc.beginPath();
-          dc.moveTo(PAD_X, y + b.lineH / 2);
-          dc.lineTo(w - PAD_X, y + b.lineH / 2);
-          dc.stroke();
-          y += b.lineH;
-          break;
-
-        case 'blank':
-          y += b.totalH;
-          break;
-
-        case 'text':
-          dc.fillStyle = TEXT_FG;
-          dc.font = `${FONT_BODY}px monospace`;
-          for (const line of b.wrappedLines) {
-            dc.fillText(line, PAD_X, y);
-            y += b.lineH;
-          }
-          break;
-      }
-
-      y += b.gapAfter;
+      dc.fillStyle = SCROLLBAR_FG;
+      dc.beginPath();
+      dc.roundRect(trackX, thumbY, SCROLLBAR_W, thumbH, 2);
+      dc.fill();
     }
   }
 
@@ -254,70 +302,48 @@ export class TextTexture {
         const lineH = Math.round(fontSize * LINE_HEIGHT);
         ctx.font = `bold ${fontSize}px monospace`;
         const wrapped = this.wrapText(text, w - PAD_X * 2, ctx);
-        blocks.push({
-          type: 'header', text, fontSize, lineH, indent: PAD_X,
-          wrappedLines: wrapped, totalH: wrapped.length * lineH,
-          gapBefore: 4, gapAfter: 2,
-        });
+        blocks.push({ type: 'header', text, fontSize, lineH, indent: PAD_X,
+          wrappedLines: wrapped, totalH: wrapped.length * lineH, gapBefore: 4, gapAfter: 2 });
       } else if (todoChecked) {
         const text = todoChecked[2];
         const lineH = Math.round(FONT_BODY * LINE_HEIGHT);
         ctx.font = `${FONT_BODY}px monospace`;
-        const indent = PAD_X + ctx.measureText('☑ ').width;
+        const indent = PAD_X + ctx.measureText('\u2611 ').width;
         const wrapped = this.wrapText(text, w - indent - PAD_X, ctx);
-        blocks.push({
-          type: 'todo-on', text, fontSize: FONT_BODY, lineH, indent,
-          wrappedLines: wrapped, totalH: wrapped.length * lineH,
-          gapBefore: 0, gapAfter: 0,
-        });
+        blocks.push({ type: 'todo-on', text, fontSize: FONT_BODY, lineH, indent,
+          wrappedLines: wrapped, totalH: wrapped.length * lineH, gapBefore: 0, gapAfter: 0 });
       } else if (todoUnchecked) {
         const text = todoUnchecked[2];
         const lineH = Math.round(FONT_BODY * LINE_HEIGHT);
         ctx.font = `${FONT_BODY}px monospace`;
-        const indent = PAD_X + ctx.measureText('☐ ').width;
+        const indent = PAD_X + ctx.measureText('\u2610 ').width;
         const wrapped = this.wrapText(text, w - indent - PAD_X, ctx);
-        blocks.push({
-          type: 'todo-off', text, fontSize: FONT_BODY, lineH, indent,
-          wrappedLines: wrapped, totalH: wrapped.length * lineH,
-          gapBefore: 0, gapAfter: 0,
-        });
+        blocks.push({ type: 'todo-off', text, fontSize: FONT_BODY, lineH, indent,
+          wrappedLines: wrapped, totalH: wrapped.length * lineH, gapBefore: 0, gapAfter: 0 });
       } else if (hrMatch) {
         const lineH = Math.round(FONT_BODY * LINE_HEIGHT);
-        blocks.push({
-          type: 'hr', text: '', fontSize: FONT_BODY, lineH, indent: 0,
-          wrappedLines: [], totalH: lineH,
-          gapBefore: 4, gapAfter: 4,
-        });
+        blocks.push({ type: 'hr', text: '', fontSize: FONT_BODY, lineH, indent: 0,
+          wrappedLines: [], totalH: lineH, gapBefore: 4, gapAfter: 4 });
       } else if (bulletMatch && !todoUnchecked && !todoChecked) {
         const text = bulletMatch[2];
         const lineH = Math.round(FONT_BODY * LINE_HEIGHT);
         ctx.font = `${FONT_BODY}px monospace`;
-        const indent = PAD_X + ctx.measureText('• ').width;
+        const indent = PAD_X + ctx.measureText('\u2022 ').width;
         const wrapped = this.wrapText(text, w - indent - PAD_X, ctx);
-        blocks.push({
-          type: 'bullet', text, fontSize: FONT_BODY, lineH, indent,
-          wrappedLines: wrapped, totalH: wrapped.length * lineH,
-          gapBefore: 0, gapAfter: 0,
-        });
+        blocks.push({ type: 'bullet', text, fontSize: FONT_BODY, lineH, indent,
+          wrappedLines: wrapped, totalH: wrapped.length * lineH, gapBefore: 0, gapAfter: 0 });
       } else if (raw.trim() === '') {
         const halfH = Math.round(FONT_BODY * LINE_HEIGHT * 0.5);
-        blocks.push({
-          type: 'blank', text: '', fontSize: FONT_BODY, lineH: halfH, indent: 0,
-          wrappedLines: [], totalH: halfH,
-          gapBefore: 0, gapAfter: 0,
-        });
+        blocks.push({ type: 'blank', text: '', fontSize: FONT_BODY, lineH: halfH, indent: 0,
+          wrappedLines: [], totalH: halfH, gapBefore: 0, gapAfter: 0 });
       } else {
         const lineH = Math.round(FONT_BODY * LINE_HEIGHT);
         ctx.font = `${FONT_BODY}px monospace`;
         const wrapped = this.wrapText(raw, w - PAD_X * 2, ctx);
-        blocks.push({
-          type: 'text', text: raw, fontSize: FONT_BODY, lineH, indent: PAD_X,
-          wrappedLines: wrapped, totalH: wrapped.length * lineH,
-          gapBefore: 0, gapAfter: 0,
-        });
+        blocks.push({ type: 'text', text: raw, fontSize: FONT_BODY, lineH, indent: PAD_X,
+          wrappedLines: wrapped, totalH: wrapped.length * lineH, gapBefore: 0, gapAfter: 0 });
       }
     }
-
     return blocks;
   }
 
@@ -340,4 +366,16 @@ export class TextTexture {
     if (lines.length === 0) lines.push('');
     return lines;
   }
+}
+
+interface LayoutLine {
+  type: 'header' | 'todo-on' | 'todo-off' | 'bullet' | 'blank' | 'text' | 'hr';
+  text: string;
+  fontSize: number;
+  lineH: number;
+  indent: number;
+  wrappedLines: string[];
+  totalH: number;
+  gapBefore: number;
+  gapAfter: number;
 }

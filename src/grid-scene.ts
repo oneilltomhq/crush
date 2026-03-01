@@ -132,6 +132,7 @@ async function init() {
   // Events
   renderer.domElement.addEventListener('click', onClick);
   renderer.domElement.addEventListener('touchend', onTouch);
+  renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('resize', onResize);
 
@@ -185,9 +186,6 @@ function addPaneForTask(task: TaskNode): void {
   const idx = panes.length;
   const color = COLORS[idx % COLORS.length];
 
-  // Pane dimensions — may be overridden for content-sized panes
-  let paneW = PANE_W;
-  let paneH = PANE_H;
   let mat: THREE.MeshBasicNodeMaterial;
 
   if (task.resource?.type === 'pty' && ghosttyInstance) {
@@ -224,15 +222,12 @@ function addPaneForTask(task: TaskNode): void {
       textTex = new TextTexture({ content, title: task.label });
       textTextures.set(task.id, textTex);
     }
-    // Size pane to match canvas aspect ratio (content-driven height)
-    const aspect = textTex.canvas.width / textTex.canvas.height;
-    paneH = paneW / aspect;
     mat = new THREE.MeshBasicNodeMaterial({ map: textTex.texture });
   } else {
     mat = new THREE.MeshBasicNodeMaterial({ color });
   }
 
-  const geo = new THREE.PlaneGeometry(paneW, paneH);
+  const geo = new THREE.PlaneGeometry(PANE_W, PANE_H);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.userData.taskId = task.id;
 
@@ -565,6 +560,14 @@ function onTouch(event: TouchEvent): void {
 
 function onClick(event: MouseEvent): void {
   handlePointer(event.clientX, event.clientY);
+}
+
+function onWheel(event: WheelEvent): void {
+  if (!focusedPane) return;
+  const textTex = textTextures.get(focusedPane.taskId);
+  if (!textTex) return;
+  event.preventDefault();
+  textTex.scroll(event.deltaY * 0.5);
 }
 
 function handlePointer(clientX: number, clientY: number): void {
