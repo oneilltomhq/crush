@@ -1,58 +1,24 @@
 # crush — roadmap
 
-> Goal: presentable prototype / demo. Not production. Optimise for "someone sees this and is impressed."
+## Where we are
 
----
+Server-authoritative architecture is in place. Voice-driven 3D workspace works end-to-end: user speaks → Claude processes with tools → panes appear/update in the Three.js scene. AgentRunner can decompose research tasks into parallel sub-queries. PTY relay provides real shell access. CDP relay streams browser content.
 
-## M0 — Anti-flake harness
+The 3D scene is a flat grid of panes with depth-based drill-down. Voice is the only input modality.
 
-Tests + CI so the demo doesn't break while we build it. One day, not a quality crusade.
+## What’s next
 
-- [x] Vitest setup — install, configure, one passing test to prove the pipeline
-- [x] Test `StdinStream` — queued push before `next()`, `close()` unblocks pending `next()`, push-after-close ignored
-- [x] Test `CrushAuthStorage` — key prefixing, get/set/delete via `MemoryStorageBackend`
-- [x] Test `MemoryWorkspaceFS` — path normalisation, `..` traversal rejection, basic CRUD
-- [x] Test `LocalShell` — command dispatch with args, unknown command error, foreground program captures input then returns control to shell
-- [x] CI — GitHub Actions: `tsc --noEmit` + `vitest run`. Lint later.
-- [x] Wire `AbortController` into `ProgramContext` so foreground programs (especially the future agent) can be interrupted via Ctrl+C
+**Authenticated browser automation** — The agent needs to act in the user’s authenticated browser context (LinkedIn, X, Gmail, etc.). The server’s browser has no sessions. Exploring: lightweight Chrome extension as a CDP bridge from the user’s local browser back to the server. Stealth/anti-detection layer needed.
 
-## M1 — Browser control wired
+**Spatial clustering** — Move from flat pane grid to neuroscience-grounded spatial arrangement: chunking (3–5 clusters), stable positions for spatial memory, peripheral attention via motion/glow. See `VISION.md`.
 
-CDP commands exposed as shell commands + a screenshot rendered as a texture in the 3D scene. This is the unique value prop becoming visible.
-
-- [ ] Service worker RPC — side panel can call `chrome.debugger` methods via message passing to the SW
-- [ ] `attach` / `detach` commands — handle `onDetach` cleanly (DevTools opened, tab closed/crashed)
-- [ ] `navigate <url>` command — `Page.navigate` + wait for `Page.loadEventFired`
-- [ ] `click <selector>` command — resolve selector via `Runtime.evaluate`, get bounding box, `Input.dispatchMouseEvent`
-- [ ] `type <text>` command — `Input.insertText` (raw text), `Input.dispatchKeyEvent` for Enter/Tab
-- [ ] `screenshot` command — `Page.captureScreenshot`, display as base64 in terminal or write to OPFS
-- [ ] `evaluate <js>` command — `Runtime.evaluate`, print result
-- [ ] Screenshot → 3D texture — render `Page.captureScreenshot` result onto a Three.js plane in the scene (single frame per action, not live streaming)
-
-## M2 — Agent loop
-
-An `agent` command that runs a bounded LLM tool-use loop, narrating what it does in the terminal.
-
-- [ ] `agent <goal>` command — accepts a natural-language goal, starts an LLM conversation
-- [ ] Tool definitions — expose M1 CDP commands as tool schemas the LLM can call
-- [ ] Bounded autonomy — hard cap (~10 tool calls), visible step counter ("Step 3/10: clicking Sign in")
-- [ ] Screenshot refresh — update the 3D texture after each action (or every 2–3 steps)
-- [ ] Narration — print what the agent is doing and a summary when it finishes
-- [ ] Ctrl+C interruption — abort the agent loop cleanly via the `AbortController` from M0
-- [ ] Anthropic API integration — direct fetch from side panel (host permission already in manifest)
-
----
+**Invisible agents, visible results** — Agent work (browsing, clicking, searching) should be invisible. The user sees synthesized results materializing as spatial clusters, not raw browser tabs.
 
 ## Parked
 
-Things we've investigated and decided not to do yet. Not lost, just not demo-relevant.
-
-| Item | Why parked | Revisit when |
+| Item | Why | Revisit when |
 |---|---|---|
-| `src/` reorg (core/platform/ui layers) | Premature for demo; flat layout is fine at current file count | File count doubles or cross-context imports cause bugs |
-| Offscreen document handoff (#8) | Real user value, not demo value | Agent needs to survive panel close |
-| Tab capture streaming (#9) | Single-frame screenshots are enough; live streaming is a perf risk | Need smooth live-tab-in-3D at 30+ fps |
-| OffscreenCanvas + Worker WebGPU (#3) | Optimisation | Rendering becomes the bottleneck |
-| Full CDP parity (scroll, hover, select, drag) | Core 5–6 commands are enough for the demo | Agent fails on real tasks due to missing actions |
-| Real PTY / shell connection | Project is browser-native by design — no localhost or remote shell | Never (design decision) |
-| SW lifecycle investigation (#10) | Dissolves if SW stays a thin RPC relay | SW becomes stateful or flaky |
+| Chrome extension as full architecture | Superseded by server-authoritative (ADR 004) | Never |
+| Offscreen document handoff | Server owns persistence now | N/A |
+| Tab capture streaming | Single-frame screenshots sufficient | Need smooth live-tab-in-3D |
+| OffscreenCanvas + Worker WebGPU | Premature optimization | Rendering bottleneck |

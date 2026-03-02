@@ -1,66 +1,45 @@
 # crush
 
-A browser-native agent shell, by extension.
-
-## Why
-
-- The browser is already a sandbox with a permission model — agents get power tools without root access
-- Every end user already has one — no sysadmin, no daemon, just install the extension
-- Agents inherit what the user already has: cookies, auth state, extensions
+A voice-driven spatial workspace where AI agents do the work and the user directs.
 
 ## What
 
-**Shell layer** — A Manifest V3 Chrome extension exposing the browser's power tools to LLM agents:
-- `chrome.debugger` / CDP for tab automation (navigate, click, type, snapshot, screenshot)
-- Side Panel API for persistent chat UI and agent runtime
-- Local shell with line editing, program model, and built-in commands (`help`, `echo`, `clear`, `colors`, `date`)
-- Storage backend (`chrome.storage.local`) for API keys and settings
-- OPFS-based virtual filesystem for workspace files
-
-**Rendering layer** — A 3D terminal rendered in the side panel:
-- Three.js WebGPU renderer with SDF text via [Three.js Blocks](https://github.com/nicokoenig/threejs-blocks) `BatchedText`
-- Ghostty VT core compiled to WASM (via [coder/ghostty-web](https://github.com/coder/ghostty-web)) — full terminal emulation driving the renderer
-- 80×24 grid of individually colored glyphs in a single draw call, with cursor blinking
-- Keyboard input translated to terminal escape sequences via `KeyEncoder`
-
-## Status
-
-Working end-to-end: the side panel boots a WebGPU renderer backed by Ghostty's WASM VT emulator, with a local shell accepting commands. No PTY backend yet — connect a WebSocket server for a real shell.
-
-Active areas: PTY relay, CDP browser panes, task-graph-driven workspace. See `adr/` for architectural direction.
+You talk to it. It does things. Results appear in a 3D spatial scene — clustered, organized, navigable. No keyboard, no mouse, no clicking through menus. See `VISION.md` for the design philosophy.
 
 ## Architecture
 
-| Concern | Owner |
+Server-authoritative (see ADR 004). The browser is a thin rendering client.
+
+| Concern | Where |
 |---|---|
-| Agent loop + rendering | Side panel |
-| Privileged APIs (CDP, tabs) | Service worker (thin RPC bridge) |
-| Terminal emulation | Ghostty WASM (`GhosttyTerminal`) |
-| Keyboard encoding | `KeyEncoder` (ghostty-web) |
-| Persistent state | `chrome.storage.local` / OPFS |
+| Agent runtime, LLM calls, tool execution | Server (Node.js on Linux host) |
+| PTY sessions (real shell) | Server (`server/pty-relay.ts`) |
+| Browser automation (CDP) | Server (`server/cdp-relay.ts`, `agent-browser` CLI) |
+| Voice pipeline | Server voice relay + client STT/TTS (ADR 005, 006) |
+| Autonomous background work | Server (`server/agent-runner.ts`) |
+| 3D rendering (Three.js/WebGPU) | Client (browser) |
+| Voice capture, STT, TTS | Client |
+| Spatial scene, pane textures | Client (`src/grid-scene.ts`, `src/pane.ts`) |
 
-See `adr/` for architecture decision records, `LAB.md` for confirmed capabilities and open questions.
+## Key abstractions
 
-## Getting started
+- **`TaskGraph`** (`src/task-graph.ts`) — Tree of `TaskNode`s with status lifecycle (pending→active→complete), optional `ResourceDescriptor`, parent/child decomposition. Events drive the scene.
+- **`Pane`** hierarchy (`src/pane.ts`) — `PtyPane` (remote shell), `BrowserPane` (CDP screencast), `TextPane` (markdown/text), `TerminalPane` (local Ghostty WASM), `PlainPane` (solid color). Each wraps a Three.js mesh + texture.
+- **`AgentRunner`** (`server/agent-runner.ts`) — Autonomous background worker. Decomposes goals into parallel sub-queries, each with its own LLM conversation + browser session.
+- **`VoiceClient`** (`src/voice-client.ts`) → **`voice-relay`** (`server/voice-relay.ts`) — Speech→Claude→tools→speech. The voice relay dispatches to tools, creates panes, kicks off AgentRunners.
+- **`grid-scene`** (`src/grid-scene.ts`) — The 3D spatial scene. Responds to TaskGraph events, manages camera, atmosphere, pane layout.
+
+## Running
 
 ```bash
 npm install
-npm run build
+npm run dev          # Vite dev server (client)
+# Server components run separately — see server/*.ts
 ```
 
-Then load the extension in Chrome:
+## Docs
 
-1. Go to `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked** and select the project root (the directory containing `manifest.json`)
-4. Click the Crush extension icon to open the side panel
-
-For development with hot reload:
-
-```bash
-npm run dev
-```
-
-## Tech
-
-TypeScript · Three.js · WebGPU · SDF text · libghostty-vt (WASM) · Chrome Extension (MV3) · Side Panel API · Chrome DevTools Protocol
+- `VISION.md` — Design philosophy, neuroscience-grounded spatial principles
+- `adr/` — Architecture decision records
+- `LAB.md` — Proven capabilities, walls, open questions
+- `AGENTS.md` — Agent/contributor conventions
