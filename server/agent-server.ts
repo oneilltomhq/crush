@@ -23,7 +23,7 @@ import { Agent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner
 import { registerBuiltInApiProviders, Type } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { Model, AssistantMessage } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { AgentTool, AgentEvent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-agent-core/dist/index.js';
-import { voiceTools, readTodo } from './pi-tools.js';
+import { voiceTools, readTodo, readProfile } from './pi-tools.js';
 import { AgentRunner, type RunnerStatus } from './agent-runner.js';
 
 // Register built-in API providers (Anthropic, etc.)
@@ -93,6 +93,7 @@ const VOICE_MODEL: Model<'anthropic-messages'> = {
 
 function buildSystemPrompt(): string {
   const todo = readTodo();
+  const profile = readProfile();
   return `You are Crush — a voice-driven coding agent. You run on a Linux server with full system access. You are an experienced software engineer.
 
 The user speaks to you and you speak back via TTS.
@@ -108,13 +109,23 @@ The user speaks to you and you speak back via TTS.
 
 ## Tools
 
-You have shell, read_file, write_file, web_search, browse, auth_browse, create_pane, and research tools. Use them when needed, but:
+You have shell, read_file, write_file, web_search, browse, auth_browse, download, create_pane, and research tools. Use them when needed, but:
 - For simple questions, just answer. Don't run a shell command to confirm things you already know.
 - For complex investigations, tell the user you're looking into it, THEN use tools.
 - For information lookup, use web_search first — it's fast and returns clean structured results.
 - For browsing specific pages, use browse (server's Chromium) or auth_browse (user's authenticated browser).
 - Only use auth_browse when you need the user's logged-in sessions (LinkedIn, X/Twitter, Gmail, etc.).
+- Use download to fetch files (PDFs, images, data) from URLs — saves to ~/.crush/downloads/.
 - Don't over-create panes. Keep the workspace clean.
+
+## Confirmation rule
+
+Before performing any action on an external service (posting to X, editing LinkedIn, submitting a form, sending an email, applying to a job, pushing to GitHub), ALWAYS:
+1. Show the user exactly what you plan to do (in a text pane if it's long)
+2. Ask for explicit approval
+3. Only proceed when the user says yes
+
+Research, reading, and drafting to local files do NOT require confirmation — just do those.
 
 ## Workspace
 
@@ -135,6 +146,16 @@ You are running inside the Crush project (/home/exedev/crush) — a Chrome exten
 - adr/ — architecture decision records
 
 You can read any of these files to answer questions about the system.
+
+## User profile
+
+Persistent user context lives in ~/.crush/profile/ (markdown files). Read these to understand who the user is, their skills, goals, target market, resume, etc. Update them when you learn new things about the user. Key files:
+- resume.md — master resume/CV
+- who.md — ideal client / target market analysis
+- skills.md — skills inventory
+- preferences.md — communication style, constraints, goals
+
+${profile ? `### Current profile:\n\n${profile}` : 'No profile files yet. As you learn about the user, save key facts to ~/.crush/profile/ files.'}
 
 ## Todo list
 

@@ -19,9 +19,11 @@
 | Pane system (3D workspace) | ✅ | Create/remove text, browser, terminal panes |
 | File read/write | ✅ | Draft documents, update configs |
 | Todo tracking | ✅ | Persistent task list the agent maintains |
-| Human-in-the-loop approval | ❌ | Agent acts autonomously — no confirm/reject gate yet |
+| Human-in-the-loop approval | ✅ | System prompt enforces confirm-before-acting on external services |
 | Multi-step workflows | ⚠️ | Research tool does multi-step; main agent is single-turn + tools |
 | Template/form filling | ❌ | No structured form interaction beyond CDP clicks/typing |
+| Download files | ✅ | `download` tool fetches URLs to ~/.crush/downloads/ |
+| Persistent user profile | ✅ | ~/.crush/profile/*.md — agent reads at start, updates as it learns |
 | Image/PDF understanding | ❌ | Can't read screenshots or documents visually |
 | OAuth / API integration | ❌ | No LinkedIn API, GitHub API, X API wired up |
 
@@ -212,26 +214,22 @@
 
 ---
 
-## What We Should Build Next (if anything)
+## What We Built (this session)
 
-Looking at the gaps across all stories, two features would unlock the most:
+### ✅ Human-in-the-Loop Approval Gate
+System prompt now enforces: before any external action (posting, editing profiles, submitting forms, pushing code), the agent must show its plan and wait for explicit approval. Research, reading, and local file drafting proceed freely. This is a prompting pattern, not a tool — pi-agent-core's `steer()` mechanism is there if we ever need hard interrupts.
 
-### Feature A: Human-in-the-Loop Approval Gate
-**Problem:** Agent acts immediately. For anything touching live profiles (LinkedIn, X, applications), we need a "here's what I'll do — approve?" step.
-**Implementation:** Add a `confirm` tool that pauses execution and waits for user voice input ("yes"/"no"/modifications). The 3D workspace already shows panes — show a diff/preview pane and wait.
-**Effort:** ~2-3 hours
-**Unlocks:** Safe automated profile edits, form submissions, posts
+### ✅ Persistent User Context
+`~/.crush/profile/` directory with markdown files (resume.md, who.md, skills.md, preferences.md). Agent reads all profile files at session start and includes them in its system prompt. Agent can update them via write_file as it learns about the user.
 
-### Feature B: Persistent User Context
-**Problem:** Each session starts cold. Agent doesn't know user's skills, WHO, resume, or past research.
-**Implementation:** A `~/.crush/profile/` directory with `resume.md`, `who.md`, `skills.md`, `preferences.md` that the agent reads at session start. Agent tools to update these.
-**Effort:** ~1 hour
-**Unlocks:** Every story benefits from context — no re-explaining who you are each session
+### ✅ Download Tool
+`download` tool fetches files from URLs to `~/.crush/downloads/`. Useful for grabbing documents, training materials, etc. Complements `shell` (which can also run curl) but is more LLM-friendly.
 
 ### Not needed yet:
 - OAuth API integrations (LinkedIn, X, GitHub APIs) — auth_browse covers us for now
 - PDF parsing — ask user to paste text or convert to markdown first
 - Form-filling framework — too much abstraction; CDP per-site is fine at this scale
+- Hard interrupt tool — conversational confirmation works; pi-agent-core steer() is available if needed
 
 ---
 

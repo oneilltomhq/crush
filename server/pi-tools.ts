@@ -30,6 +30,8 @@ const AUTH_CDP_PORT = parseInt(process.env.AUTH_CDP_PORT || '9223');
 function getTavilyKey(): string { return process.env.TAVILY_API_KEY || ''; }
 const TODO_PATH = path.join(os.homedir(), '.openclaw', 'workspace', 'todo.md');
 const PROJECT_ROOT = '/home/exedev/crush';
+const PROFILE_DIR = path.join(os.homedir(), '.crush', 'profile');
+const DOWNLOADS_DIR = path.join(os.homedir(), '.crush', 'downloads');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -126,6 +128,19 @@ export async function tavilySearch(opts: {
 export function readTodo(): string {
   try { return fs.readFileSync(TODO_PATH, 'utf-8'); }
   catch { return '(No todo file found)'; }
+}
+
+/** Read all files from ~/.crush/profile/ and return concatenated content */
+export function readProfile(): string {
+  try {
+    if (!fs.existsSync(PROFILE_DIR)) return '';
+    const files = fs.readdirSync(PROFILE_DIR).filter(f => f.endsWith('.md')).sort();
+    if (files.length === 0) return '';
+    return files.map(f => {
+      const content = fs.readFileSync(path.join(PROFILE_DIR, f), 'utf-8');
+      return `## ${f}\n\n${content}`;
+    }).join('\n\n---\n\n');
+  } catch { return ''; }
 }
 
 function writeTodo(content: string): void {
@@ -367,6 +382,40 @@ export function makeWebSearchTool(): AgentTool {
   };
 }
 
+/** Download a file from a URL */
+export function makeDownloadTool(): AgentTool {
+  return {
+    name: 'download',
+    label: 'Download',
+    description: `Download a file from a URL. Saves to ~/.crush/downloads/ by default. Returns the local path. Use for fetching documents, images, data files, etc. For web page content, prefer browse or web_search instead.`,
+    parameters: Type.Object({
+      url: Type.String({ description: 'URL to download' }),
+      filename: Type.Optional(Type.String({ description: 'Save as this filename (default: derived from URL)' })),
+    }),
+    execute: async (_id, params) => {
+      fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+      const urlObj = new URL(params.url);
+      const defaultName = path.basename(urlObj.pathname) || 'download';
+      const filename = params.filename || defaultName;
+      const outPath = path.join(DOWNLOADS_DIR, filename);
+      console.log(`[tool] download: ${params.url} → ${outPath}`);
+      try {
+        const res = await fetch(params.url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Crush/1.0)' },
+          redirect: 'follow',
+        });
+        if (!res.ok) return textResult(`Download failed: HTTP ${res.status} ${res.statusText}`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+        fs.writeFileSync(outPath, buffer);
+        const sizeMB = (buffer.length / (1024 * 1024)).toFixed(2);
+        return textResult(`Downloaded ${sizeMB} MB to ${outPath}`);
+      } catch (e: any) {
+        return textResult(`Download error: ${e.message}`);
+      }
+    },
+  };
+}
+
 /** Update todo list */
 export function makeUpdateTodoTool(ws: WebSocket): AgentTool {
   return {
@@ -422,6 +471,7 @@ export function voiceTools(ws: WebSocket): AgentTool[] {
     makeBrowseTool(ws),
     makeAuthBrowseTool(ws),
     makeWebSearchTool(),
+    makeDownloadTool(),
     makeUpdateTodoTool(ws),
     // research + research_status are added in agent-server.ts
     // because they need access to the connection state
