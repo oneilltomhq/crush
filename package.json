@@ -12,8 +12,10 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "2captcha-ts": "^2.4.1",
     "ghostty-web": "^0.4.0",
     "node-pty": "^1.1.0",
+    "patchright": "^1.57.0",
     "three": "^0.182.0",
     "ws": "^8.19.0"
   },
