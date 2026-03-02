@@ -8,7 +8,7 @@ The 3D scene is a flat grid of panes with depth-based drill-down. Voice is the o
 
 ## What’s next
 
-**Authenticated browser automation** — The agent needs to act in the user’s authenticated browser context (LinkedIn, X, Gmail, etc.). The server’s browser has no sessions. Exploring: lightweight Chrome extension as a CDP bridge from the user’s local browser back to the server. Stealth/anti-detection layer needed.
+**Authenticated browser automation** — The agent needs to act in the user’s authenticated browser context (LinkedIn, X, Gmail, etc.). The server’s browser has no sessions. Working. User’s real browser (Brave/Chrome with `--remote-debugging-port=9222`) is tunneled to the server via SSH reverse tunnel (`ssh -R 9223:localhost:9222`). Patchright connects at `http://localhost:9223` for undetectable automation with human-behavior simulation and auto-CAPTCHA solving. See `OPS.md` for setup.
 
 **Spatial clustering** — Move from flat pane grid to neuroscience-grounded spatial arrangement: chunking (3–5 clusters), stable positions for spatial memory, peripheral attention via motion/glow. See `VISION.md`.
 

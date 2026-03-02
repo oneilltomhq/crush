@@ -1,27 +1,29 @@
 /**
  * stealth-browser.ts — Patchright-based browser automation with stealth.
  *
- * Two modes:
- *   1. Bridge mode: connect to user's real browser via CdpBridge (authenticated sessions)
- *   2. Stealth mode: launch a patchright-managed Chromium (undetectable, fresh profile)
+ * Three modes:
+ *   1. CDP endpoint: connect to user's browser via SSH reverse tunnel (authenticated sessions)
+ *   2. Persistent profile: launch Chromium with a saved profile
+ *   3. Fresh launch: launch a clean patchright-managed Chromium
  *
- * Both modes return a patchright Page wrapped in HumanBehavior for
+ * All modes return a patchright Page wrapped in HumanBehavior for
  * human-like interaction patterns.
+ *
+ * For authenticated browser access, the user runs:
+ *   ssh -R 9223:localhost:9222 valley-silver.exe.xyz
+ * Then connect with: createStealthSession({ cdpEndpoint: 'http://localhost:9223' })
  */
 
 import { chromium, type Browser, type BrowserContext, type Page } from 'patchright';
 import { HumanBehavior, type HumanBehaviorConfig } from './human-behavior';
 import { CaptchaSolver } from './captcha-solver';
-import { CdpBridge } from './cdp-bridge';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface StealthBrowserConfig {
-  /** Connect to user's browser via CDP bridge instead of launching a new one. */
-  bridge?: CdpBridge;
-  /** CDP endpoint to connect to directly (e.g. ws://localhost:9222/devtools/browser/...). */
+  /** CDP endpoint to connect to (e.g. http://localhost:9223 via SSH tunnel). */
   cdpEndpoint?: string;
   /** Path to a Chrome profile directory for persistent sessions. */
   profilePath?: string;
@@ -56,14 +58,11 @@ export interface StealthSession {
  *
  * Usage:
  * ```ts
- * // Bridge mode (user's authenticated browser)
- * const session = await createStealthSession({ bridge: myBridge });
+ * // User's authenticated browser via SSH tunnel
+ * const session = await createStealthSession({ cdpEndpoint: 'http://localhost:9223' });
  *
- * // Stealth launch mode
+ * // Fresh stealth launch
  * const session = await createStealthSession({ headless: false });
- *
- * // Direct CDP
- * const session = await createStealthSession({ cdpEndpoint: 'ws://...' });
  * ```
  */
 export async function createStealthSession(
@@ -73,25 +72,14 @@ export async function createStealthSession(
   let context: BrowserContext;
   let page: Page;
 
-  if (config.bridge) {
-    // Mode 1: Connect via CDP bridge to user's real browser
-    if (!config.bridge.isConnected()) {
-      throw new Error('CDP bridge is not connected. Is bridge-client.js running?');
-    }
-    const endpoint = config.bridge.getEndpoint();
-    browser = await chromium.connectOverCDP(endpoint);
-    // Use the first existing context (user's default profile) or create one
-    const contexts = browser.contexts();
-    context = contexts.length > 0 ? contexts[0] : await browser.newContext();
-    page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-  } else if (config.cdpEndpoint) {
-    // Mode 2: Direct CDP connection
+  if (config.cdpEndpoint) {
+    // Mode 1: CDP connection (typically user's browser via SSH reverse tunnel)
     browser = await chromium.connectOverCDP(config.cdpEndpoint);
     const contexts = browser.contexts();
     context = contexts.length > 0 ? contexts[0] : await browser.newContext();
     page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
   } else if (config.profilePath) {
-    // Mode 3: Launch with persistent profile (stealth)
+    // Mode 2: Launch with persistent profile (stealth)
     context = await chromium.launchPersistentContext(config.profilePath, {
       channel: 'chrome',
       headless: config.headless ?? false,
@@ -101,7 +89,7 @@ export async function createStealthSession(
     browser = context.browser()!;
     page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
   } else {
-    // Mode 4: Launch fresh stealth browser
+    // Mode 3: Launch fresh stealth browser
     browser = await chromium.launch({
       channel: 'chrome',
       headless: config.headless ?? false,
@@ -141,8 +129,8 @@ export async function createStealthSession(
 
     async close(): Promise<void> {
       await context.close().catch(() => {});
-      // Don't close browser in bridge mode — it's the user's browser
-      if (!config.bridge && !config.cdpEndpoint) {
+      // Don't close browser in CDP mode — it's the user's browser
+      if (!config.cdpEndpoint) {
         await browser.close().catch(() => {});
       }
     },
