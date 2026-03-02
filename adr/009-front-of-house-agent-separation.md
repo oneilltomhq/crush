@@ -75,6 +75,6 @@ The FOH agent subscribes to worker events (progress, completion, error, needs-ap
 - Risk of over-engineering: we could ship incremental improvements to the current architecture (streaming responses, concurrent tool calls) that solve 80% of the latency problem without the full separation.
 
 **Open questions:**
-- Can Groq's Llama 4 models handle the routing/conversation role well enough? Need to eval.
+- ~~Can Groq's Llama 4 models handle the routing/conversation role well enough? Need to eval.~~ **Confirmed:** Llama 4 Scout via OpenRouter (Groq-hosted) handles tool routing correctly. 1.2-1.9s round-trip with tool calls, sub-500ms for pure conversation. $0.0001/turn. System prompt tuning needed for edge cases (status checks).
 - Should workers share a tool registry or each have their own? Leaning toward each-their-own for isolation.
 - How does the FOH agent's context window stay lean if it's monitoring many workers? Probably needs summarization.
