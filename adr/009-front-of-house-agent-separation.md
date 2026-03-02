@@ -1,6 +1,6 @@
 # ADR 009: Front-of-House / Worker Agent Separation
 
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
