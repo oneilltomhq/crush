@@ -14,8 +14,8 @@
  *   - npm install ws
  */
 
-const WebSocket = require('ws');
-const http = require('http');
+import WebSocket from 'ws';
+import http from 'http';
 
 const serverUrl = process.argv[2];
 if (!serverUrl) {
