@@ -459,7 +459,51 @@ Commands: open <url>, get text body, snapshot -i, click @<ref>, scroll down`,
 // Tool sets
 // ---------------------------------------------------------------------------
 
-/** Tools for the interactive voice agent (requires WebSocket for pane commands) */
+/** Tools for the FOH (front-of-house) voice agent — instant ops only */
+export function fohTools(ws: WebSocket): AgentTool[] {
+  return [
+    makeReadFileTool(),
+    makeWriteFileTool(),
+    makeCreatePaneTool(ws),
+    makeRemovePaneTool(ws),
+    makeScrollPaneTool(ws),
+    makeUpdateTodoTool(ws),
+    // delegate_task, check_tasks, abort_task added in agent-server.ts
+    // because they need access to the worker registry
+  ];
+}
+
+/** Tools for shell/coding workers */
+export function shellWorkerTools(): AgentTool[] {
+  return [
+    makeShellTool(),
+    makeReadFileTool(),
+    makeWriteFileTool(),
+    makeWebSearchTool(),
+    makeDownloadTool(),
+  ];
+}
+
+/** Tools for browser automation workers */
+export function browserWorkerTools(ws: WebSocket): AgentTool[] {
+  return [
+    makeBrowseTool(ws),
+    makeAuthBrowseTool(ws),
+    makeWebSearchTool(),
+    makeReadFileTool(),
+    makeWriteFileTool(),
+  ];
+}
+
+/** Tools for research sub-runners (no WebSocket dependency) */
+export function researchSubTools(): AgentTool[] {
+  return [
+    makeWebSearchTool(),
+    makeStandaloneBrowseTool(),
+  ];
+}
+
+/** All tools for legacy single-agent mode (requires WebSocket) */
 export function voiceTools(ws: WebSocket): AgentTool[] {
   return [
     makeShellTool(),
@@ -473,15 +517,5 @@ export function voiceTools(ws: WebSocket): AgentTool[] {
     makeWebSearchTool(),
     makeDownloadTool(),
     makeUpdateTodoTool(ws),
-    // research + research_status are added in agent-server.ts
-    // because they need access to the connection state
-  ];
-}
-
-/** Tools for research sub-runners (no WebSocket dependency) */
-export function researchSubTools(): AgentTool[] {
-  return [
-    makeWebSearchTool(),
-    makeStandaloneBrowseTool(),
   ];
 }

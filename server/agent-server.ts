@@ -23,8 +23,9 @@ import { Agent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner
 import { registerBuiltInApiProviders, Type } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { Model, AssistantMessage } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { AgentTool, AgentEvent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-agent-core/dist/index.js';
-import { voiceTools, readTodo, readProfile } from './pi-tools.js';
-import { AgentRunner, type RunnerStatus } from './agent-runner.js';
+import { fohTools, shellWorkerTools, browserWorkerTools, readTodo, readProfile } from './pi-tools.js';
+import { AgentRunner } from './agent-runner.js';
+import { WorkerAgent, type WorkerType, type WorkerStatus } from './worker-agent.js';
 
 // Register built-in API providers (Anthropic, etc.)
 registerBuiltInApiProviders();
@@ -46,12 +47,45 @@ const RESEARCH_MODEL: Model<'openai-completions'> = {
   maxTokens: 65536,
 };
 
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
-if (!OPENROUTER_KEY) console.warn('[agent-server] OPENROUTER_API_KEY not set — research tool will fail');
+// ---------------------------------------------------------------------------
+// FOH model — Llama 4 Scout via OpenRouter (Groq-hosted, fast inference)
+// ~500ms round-trip, $0.08/$0.30 per Mtok
+// ---------------------------------------------------------------------------
+const FOH_MODEL: Model<'openai-completions'> = {
+  id: 'meta-llama/llama-4-scout',
+  name: 'Llama 4 Scout',
+  api: 'openai-completions',
+  provider: 'openrouter',
+  baseUrl: 'https://openrouter.ai/api/v1',
+  reasoning: false,
+  input: ['text'],
+  cost: { input: 0.08, output: 0.3, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 327680,
+  maxTokens: 1024,
+};
 
-function researchApiKey(provider: string): string {
+// ---------------------------------------------------------------------------
+// Worker model — Sonnet 4 via exe-gateway (capable, for shell/browser tasks)
+// ---------------------------------------------------------------------------
+const WORKER_MODEL: Model<'anthropic-messages'> = {
+  id: 'claude-sonnet-4-20250514',
+  name: 'Sonnet 4',
+  api: 'anthropic-messages',
+  provider: 'anthropic',
+  baseUrl: 'http://169.254.169.254/gateway/llm/anthropic',
+  reasoning: false,
+  input: ['text'],
+  cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 200000,
+  maxTokens: 4096,
+};
+
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
+if (!OPENROUTER_KEY) console.warn('[agent-server] OPENROUTER_API_KEY not set — research/FOH will fail');
+
+function resolveApiKey(provider: string): string {
   if (provider === 'openrouter') return OPENROUTER_KEY;
-  return 'gateway';
+  return 'gateway'; // exe-gateway accepts any non-empty key
 }
 
 // ---------------------------------------------------------------------------
@@ -70,92 +104,59 @@ const ELEVENLABS_API_KEY = requireEnv('ELEVENLABS_API_KEY');
 
 const WS_PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === '--port') || '8092');
 
-// ---------------------------------------------------------------------------
-// Model definition
-// ---------------------------------------------------------------------------
 
-const VOICE_MODEL: Model<'anthropic-messages'> = {
-  id: 'claude-sonnet-4-20250514',
-  name: 'Sonnet 4',
-  api: 'anthropic-messages',
-  provider: 'anthropic',
-  baseUrl: 'http://169.254.169.254/gateway/llm/anthropic',
-  reasoning: false,
-  input: ['text'],
-  cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 200000,
-  maxTokens: 1024,
-};
 
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(): string {
+function buildFohSystemPrompt(): string {
   const todo = readTodo();
   const profile = readProfile();
-  return `You are Crush — a voice-driven coding agent. You run on a Linux server with full system access. You are an experienced software engineer.
+  return `You are Crush — a fast voice assistant that delegates complex work to background workers.
 
-The user speaks to you and you speak back via TTS.
+The user speaks to you and you speak back via TTS. You are the front-of-house: always responsive, never slow.
 
 ## Voice rules (critical)
 
-- Keep responses SHORT — 1-3 sentences. This is a conversation, not a monologue.
-- No markdown. No asterisks, bullets, or headers. Just talk like a person.
-- Put structured content (code, lists, details) in a text pane instead of speaking it.
-- Respond FAST. Say something first, then use tools if needed. Don't disappear into a tool chain.
-- If a tool call will take time, say what you're doing first so the user isn't waiting in silence.
-- Don't be fluffy. Be warm but direct, like a colleague.
+- Keep responses SHORT — 1-2 sentences. This is a conversation, not a monologue.
+- No markdown formatting in speech. Just talk like a person.
+- ALWAYS include spoken text in your response, even when using tools. Say what you're doing.
+- Respond FAST. You must never leave the user in silence.
 
-## Tools
+## How you work
 
-You have shell, read_file, write_file, web_search, browse, auth_browse, download, create_pane, and research tools. Use them when needed, but:
-- For simple questions, just answer. Don't run a shell command to confirm things you already know.
-- For complex investigations, tell the user you're looking into it, THEN use tools.
-- For information lookup, use web_search first — it's fast and returns clean structured results.
-- For browsing specific pages, use browse (server's Chromium) or auth_browse (user's authenticated browser).
-- Only use auth_browse when you need the user's logged-in sessions (LinkedIn, X/Twitter, Gmail, etc.).
-- Use download to fetch files (PDFs, images, data) from URLs — saves to ~/.crush/downloads/.
-- Don't over-create panes. Keep the workspace clean.
+You do NOT execute complex tasks yourself. You delegate to background workers:
+- delegate_task with worker_type "research" — web research, competitive analysis, market research
+- delegate_task with worker_type "shell" — system commands, coding, file operations, git, installs
+- delegate_task with worker_type "browser" — web automation, CDP browsing, authenticated site actions
+
+Workers run in the background. You can check on them with check_tasks and abort them with abort_task.
+
+You DO handle directly (no delegation needed):
+- Reading/writing local files (read_file, write_file) — these are instant
+- Managing workspace panes (create_pane, remove_pane, scroll_pane)
+- Updating the todo list
+- Simple conversation and questions
 
 ## Confirmation rule
 
-Before performing any action on an external service (posting to X, editing LinkedIn, submitting a form, sending an email, applying to a job, pushing to GitHub), ALWAYS:
-1. Show the user exactly what you plan to do (in a text pane if it's long)
+Before delegating any action on an external service (posting to X, editing LinkedIn, submitting forms, pushing to GitHub), ALWAYS:
+1. Show the user what you plan to do
 2. Ask for explicit approval
-3. Only proceed when the user says yes
+3. Only delegate when the user says yes
 
-Research, reading, and drafting to local files do NOT require confirmation — just do those.
+Research, reading, and local file drafting proceed without confirmation.
 
 ## Workspace
 
-The user sees a 3D grid of panes. You control what's in it:
-- PTY panes: real bash shell sessions
-- Browser panes: live browser tab with CDP screencast
-- Text panes: scrollable text/markdown content
-- Task panes: labeled organizational cards
-
-Create panes when useful. Don't over-create. The workspace should stay clean.
-
-## Project context
-
-You are running inside the Crush project (/home/exedev/crush) — a Chrome extension + 3D spatial workspace. Key paths:
-- src/ — client-side TypeScript (Three.js renderer, panes, voice client)
-- server/ — server-side (this voice relay, agent runner, PTY relay)
-- vendor/ — Ghostty WASM, ghostty-web
-- adr/ — architecture decision records
-
-You can read any of these files to answer questions about the system.
+The user sees a 3D grid of panes. Create panes to show worker results, drafts, or information. Keep it clean.
 
 ## User profile
 
-Persistent user context lives in ~/.crush/profile/ (markdown files). Read these to understand who the user is, their skills, goals, target market, resume, etc. Update them when you learn new things about the user. Key files:
-- resume.md — master resume/CV
-- who.md — ideal client / target market analysis
-- skills.md — skills inventory
-- preferences.md — communication style, constraints, goals
+Persistent context in ~/.crush/profile/ (markdown files). Read these to understand the user. Update them when you learn new things.
 
-${profile ? `### Current profile:\n\n${profile}` : 'No profile files yet. As you learn about the user, save key facts to ~/.crush/profile/ files.'}
+${profile ? `### Current profile:\n\n${profile}` : 'No profile files yet. Save key facts to ~/.crush/profile/ as you learn about the user.'}
 
 ## Todo list
 
@@ -189,85 +190,185 @@ function extractText(msg: any): string {
 interface Connection {
   ws: WebSocket;
   id: string;
-  agent: Agent;
+  agent: Agent;          // FOH agent (Scout)
   processing: boolean;
-  runners: AgentRunner[];
+  workers: Map<string, WorkerAgent | AgentRunner>;  // background workers
+  workerCounter: number;
 }
 
 // ---------------------------------------------------------------------------
-// Build tools for a connection (includes research tools that need conn state)
+// Worker system prompts
 // ---------------------------------------------------------------------------
 
-function buildTools(conn: Connection): AgentTool[] {
-  const tools = voiceTools(conn.ws);
+const SHELL_WORKER_PROMPT = `You are a shell/coding worker agent. Execute the given task using shell commands, file operations, and web searches.
 
-  // research tool — launches a background AgentRunner
-  const researchTool: AgentTool = {
-    name: 'research',
-    label: 'Research',
-    description: `Launch a background research agent that autonomously browses the web, collects information, and builds a research document. Use when the user asks to research a topic or find information requiring multiple pages.`,
+You have full system access. Working directory is /home/exedev/crush.
+Be thorough but efficient. When done, summarize what you did and the outcome.`;
+
+const BROWSER_WORKER_PROMPT = `You are a browser automation worker agent. Execute the given task using CDP browser automation.
+
+Tools:
+- browse: control the server's headless Chromium (for general browsing)
+- auth_browse: control the user's authenticated browser (for logged-in sites: LinkedIn, X, Gmail, etc.)
+- web_search: Tavily search for information lookup
+
+Workflow: open URL → snapshot -i → interact with @refs → verify result.
+Be careful with auth_browse — you're controlling the user's real browser sessions.
+When done, summarize what you did and the outcome.`;
+
+// ---------------------------------------------------------------------------
+// Build FOH tools for a connection (includes delegation tools)
+// ---------------------------------------------------------------------------
+
+function buildFohTools(conn: Connection): AgentTool[] {
+  const tools = fohTools(conn.ws);
+
+  // delegate_task — creates a background worker
+  const delegateTaskTool: AgentTool = {
+    name: 'delegate_task',
+    label: 'Delegate Task',
+    description: `Delegate a task to a background worker agent. Returns immediately — the worker runs async.
+Worker types:
+- research: deep web research with parallel sub-queries. Use for any research, analysis, or information gathering.
+- shell: system commands, coding, file operations, git, package management.
+- browser: CDP browser automation, web scraping, authenticated site actions (LinkedIn, X, etc.).`,
     parameters: Type.Object({
-      goal: Type.String({ description: "What to research. Be specific — include the user's actual question, constraints, and desired output format." }),
+      task: Type.String({ description: 'Clear, specific description of what to accomplish' }),
+      worker_type: Type.Union([
+        Type.Literal('research'),
+        Type.Literal('shell'),
+        Type.Literal('browser'),
+      ], { description: 'Type of worker to use' }),
     }),
     execute: async (_id, params) => {
-      const goal = params.goal;
-      const notesPaneLabel = `Research: ${goal.substring(0, 40)}${goal.length > 40 ? '...' : ''}`;
+      const { task, worker_type } = params as { task: string; worker_type: WorkerType };
+      const workerId = `w${++conn.workerCounter}`;
+      const tag = `[worker:${workerId}]`;
 
-      send(conn.ws, {
-        type: 'command', name: 'create_pane',
-        input: { pane_type: 'text', label: notesPaneLabel, content: `# Researching...\n\n*${goal}*\n\nStarting research agent...` },
-      });
+      console.log(`${tag} Delegating ${worker_type}: "${task.substring(0, 80)}"`);
 
-      const runner = new AgentRunner({
-        goal,
-        ws: conn.ws,
-        notesPaneLabel,
-        model: RESEARCH_MODEL,
-        // subModel defaults to model when not specified
-        getApiKey: researchApiKey,
-        onComplete: (summary) => {
-          console.log(`[agent:${conn.id}] Research complete: ${summary.substring(0, 80)}`);
-          send(conn.ws, { type: 'research_complete', runnerId: runner.id, summary });
-        },
-        onProgress: (status) => {
-          console.log(`[agent:${conn.id}] Research progress: ${status}`);
-        },
-        onError: (err) => {
-          console.error(`[agent:${conn.id}] Research error: ${err}`);
-          send(conn.ws, { type: 'research_error', runnerId: runner.id, error: err });
-        },
-      });
+      if (worker_type === 'research') {
+        // Use the specialized AgentRunner for research (3-phase pipeline)
+        const notesPaneLabel = `Research: ${task.substring(0, 40)}${task.length > 40 ? '...' : ''}`;
+        send(conn.ws, {
+          type: 'command', name: 'create_pane',
+          input: { pane_type: 'text', label: notesPaneLabel, content: `# Researching...\n\n*${task}*\n\nStarting research agent...` },
+        });
 
-      conn.runners.push(runner);
-      runner.start();
+        const runner = new AgentRunner({
+          goal: task,
+          ws: conn.ws,
+          notesPaneLabel,
+          model: RESEARCH_MODEL,
+          getApiKey: resolveApiKey,
+          onComplete: (summary) => {
+            console.log(`${tag} Complete: ${summary.substring(0, 80)}`);
+            send(conn.ws, { type: 'worker_complete', workerId, summary });
+          },
+          onProgress: (status) => console.log(`${tag} ${status}`),
+          onError: (err) => {
+            console.error(`${tag} Error: ${err}`);
+            send(conn.ws, { type: 'worker_error', workerId, error: err });
+          },
+        });
+        conn.workers.set(workerId, runner);
+        runner.start();
+      } else {
+        // Use generic WorkerAgent for shell/browser tasks
+        const workerTools = worker_type === 'shell'
+          ? shellWorkerTools()
+          : browserWorkerTools(conn.ws);
+        const workerPrompt = worker_type === 'shell'
+          ? SHELL_WORKER_PROMPT
+          : BROWSER_WORKER_PROMPT;
+
+        // Create a pane for the worker's output
+        const paneLabel = `${worker_type}: ${task.substring(0, 35)}${task.length > 35 ? '...' : ''}`;
+        send(conn.ws, {
+          type: 'command', name: 'create_pane',
+          input: { pane_type: 'text', label: paneLabel, content: `*Working on: ${task}*\n\nStarting...` },
+        });
+
+        const worker = new WorkerAgent({
+          id: workerId,
+          type: worker_type,
+          goal: task,
+          model: WORKER_MODEL,
+          tools: workerTools,
+          systemPrompt: workerPrompt,
+          getApiKey: resolveApiKey,
+          onProgress: (wId, msg) => console.log(`${tag} ${msg}`),
+          onComplete: (wId, result) => {
+            console.log(`${tag} Complete (${result.length} chars)`);
+            // Update the worker's pane with the result
+            send(conn.ws, {
+              type: 'command', name: 'update_pane',
+              input: { label: paneLabel, content: result },
+            });
+            send(conn.ws, { type: 'worker_complete', workerId: wId, summary: result.substring(0, 200) });
+          },
+          onError: (wId, err) => {
+            console.error(`${tag} Error: ${err}`);
+            send(conn.ws, { type: 'worker_error', workerId: wId, error: err });
+          },
+        });
+        conn.workers.set(workerId, worker);
+        worker.start();
+      }
 
       return {
-        content: [{ type: 'text', text: `Research agent launched. It will browse the web and build findings in the "${notesPaneLabel}" pane. I'll keep working in the background — you can ask me how it's going anytime.` }],
-        details: {},
+        content: [{ type: 'text', text: `Task delegated to ${worker_type} worker (${workerId}). Running in background.` }],
+        details: { workerId },
       };
     },
   };
 
-  // research_status tool
-  const researchStatusTool: AgentTool = {
-    name: 'research_status',
-    label: 'Research Status',
-    description: 'Check on running research agents. Use when the user asks how research is going.',
+  // check_tasks — report on worker status
+  const checkTasksTool: AgentTool = {
+    name: 'check_tasks',
+    label: 'Check Tasks',
+    description: 'Check status of background workers. Use when user asks how things are going.',
     parameters: Type.Object({}),
     execute: async () => {
-      if (conn.runners.length === 0) {
-        return { content: [{ type: 'text', text: 'No research agents running.' }], details: {} };
+      if (conn.workers.size === 0) {
+        return { content: [{ type: 'text', text: 'No background tasks running.' }], details: {} };
       }
-      const statuses = conn.runners.map(r => {
-        const s = r.getStatus();
-        const subs = s.subQueries.map(sq => `  - ${sq.query.substring(0, 40)}: ${sq.state}`).join('\n');
-        return `"${s.goal.substring(0, 50)}" — ${s.state}\n${subs}`;
-      });
-      return { content: [{ type: 'text', text: statuses.join('\n') }], details: {} };
+      const lines: string[] = [];
+      for (const [id, w] of conn.workers) {
+        if (w instanceof AgentRunner) {
+          const s = w.getStatus();
+          lines.push(`${id} [research] "${s.goal.substring(0, 50)}" — ${s.state}`);
+        } else {
+          const s = w.getStatus();
+          const elapsed = Math.round((Date.now() - s.startedAt) / 1000);
+          lines.push(`${id} [${s.type}] "${s.goal.substring(0, 50)}" — ${s.state} (${elapsed}s)`);
+          if (s.result) lines.push(`  Result: ${s.result.substring(0, 100)}...`);
+        }
+      }
+      return { content: [{ type: 'text', text: lines.join('\n') }], details: {} };
     },
   };
 
-  tools.push(researchTool, researchStatusTool);
+  // abort_task — cancel a running worker
+  const abortTaskTool: AgentTool = {
+    name: 'abort_task',
+    label: 'Abort Task',
+    description: 'Abort a background worker by ID. Use when user wants to cancel a task.',
+    parameters: Type.Object({
+      worker_id: Type.String({ description: 'Worker ID to abort (e.g. w1, w2)' }),
+    }),
+    execute: async (_id, params) => {
+      const wId = (params as { worker_id: string }).worker_id;
+      const worker = conn.workers.get(wId);
+      if (!worker) {
+        return { content: [{ type: 'text', text: `No worker found with ID ${wId}.` }], details: {} };
+      }
+      worker.abort();
+      return { content: [{ type: 'text', text: `Worker ${wId} aborted.` }], details: {} };
+    },
+  };
+
+  tools.push(delegateTaskTool, checkTasksTool, abortTaskTool);
   return tools;
 }
 
@@ -278,8 +379,8 @@ function buildTools(conn: Connection): AgentTool[] {
 async function processStart(conn: Connection): Promise<void> {
   if (conn.processing) return;
   conn.processing = true;
-  const tag = `[agent:${conn.id}]`;
-  console.log(`${tag} Conversation started — agent speaks first`);
+  const tag = `[foh:${conn.id}]`;
+  console.log(`${tag} Conversation started`);
 
   try {
     send(conn.ws, { type: 'thinking' });
@@ -287,8 +388,8 @@ async function processStart(conn: Connection): Promise<void> {
     const todo = readTodo();
     const hasTodo = todo && !todo.includes('No todo file found');
     const prompt = hasTodo
-      ? '[System: The user just opened Crush and tapped to start. They have an existing todo list. Greet them briefly, mention how many items, and ask which one they want to tackle. One short sentence + one question. Warm, not cheesy.]'
-      : '[System: The user just opened Crush for the first time. Say hi in ONE short sentence, then ask what they\'re working on today. That\'s it. Do NOT list features or capabilities. Do NOT mention shells, browsers, or tools. Just ask what they want to accomplish.]';
+      ? '[System: The user just opened Crush. They have a todo list. Greet briefly, mention it, ask what to tackle. One sentence + one question.]'
+      : '[System: The user just opened Crush. Say hi in one sentence, ask what they want to work on. Do NOT list features.]';
 
     await conn.agent.prompt(prompt);
 
@@ -321,37 +422,26 @@ async function processText(conn: Connection, userText: string): Promise<void> {
   }
 
   conn.processing = true;
-  const tag = `[agent:${conn.id}]`;
+  const tag = `[foh:${conn.id}]`;
   console.log(`${tag} "${userText.substring(0, 80)}${userText.length > 80 ? '...' : ''}"`);
 
   try {
     send(conn.ws, { type: 'thinking' });
 
-    // Trim context if too long (simple heuristic — keep last 30 messages)
-    if (conn.agent.state.messages.length > 30) {
-      const trimmed = conn.agent.state.messages.slice(-30);
+    // FOH agent stays lean — keep last 20 messages
+    if (conn.agent.state.messages.length > 20) {
+      const trimmed = conn.agent.state.messages.slice(-20);
       conn.agent.replaceMessages(trimmed);
     }
 
     // Run the agent loop — Pi handles tool calls internally
     await conn.agent.prompt(userText);
 
-    // Collect all text from assistant messages produced during this prompt
-    // (there may be multiple assistant messages if tools were called)
+    // Extract spoken text from the LAST assistant message only.
+    // FOH agent should produce one short response per turn.
     const messages = conn.agent.state.messages;
-    const spokenParts: string[] = [];
-    // Walk backwards from end to find all assistant messages from this turn
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role === 'user' && typeof (m as any).content === 'string') break; // hit the user message
-      if (m.role === 'user') continue; // skip tool_result user messages
-      if (m.role === 'assistant') {
-        const text = extractText(m);
-        if (text) spokenParts.unshift(text);
-      }
-    }
-
-    const spoken = spokenParts.join(' ').trim();
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+    const spoken = lastAssistant ? extractText(lastAssistant) : '';
     send(conn.ws, { type: 'response', text: spoken });
     if (spoken) {
       console.log(`${tag} Response: "${spoken.substring(0, 80)}${spoken.length > 80 ? '...' : ''}"`);
@@ -372,26 +462,26 @@ let connectionCounter = 0;
 
 function handleConnection(ws: WebSocket): void {
   const id = String(++connectionCounter);
-  console.log(`[agent:${id}] Client connected`);
+  console.log(`[foh:${id}] Client connected`);
 
-  // Create Pi Agent for this connection
+  // Create FOH (front-of-house) agent — fast conversational model
   const agent = new Agent({
     initialState: {
-      model: VOICE_MODEL,
-      systemPrompt: buildSystemPrompt(),
+      model: FOH_MODEL,
+      systemPrompt: buildFohSystemPrompt(),
     },
-    getApiKey: async () => 'not-needed',  // exe-gateway doesn't need API keys
+    getApiKey: async (provider) => resolveApiKey(provider),
   });
 
-  const conn: Connection = { ws, id, agent, processing: false, runners: [] };
+  const conn: Connection = { ws, id, agent, processing: false, workers: new Map(), workerCounter: 0 };
 
-  // Set tools (they need the connection reference)
-  agent.setTools(buildTools(conn));
+  // Set FOH tools (they need the connection reference for delegation)
+  agent.setTools(buildFohTools(conn));
 
-  // Subscribe to agent events for logging
+  // Subscribe to FOH agent events for logging
   agent.subscribe((e: AgentEvent) => {
     if (e.type === 'tool_execution_start') {
-      console.log(`[agent:${id}] Tool: ${e.toolName}(${JSON.stringify(e.args).substring(0, 100)})`);
+      console.log(`[foh:${id}] Tool: ${e.toolName}(${JSON.stringify(e.args).substring(0, 100)})`);
     }
   });
 
@@ -417,8 +507,12 @@ function handleConnection(ws: WebSocket): void {
     }
   });
 
-  ws.on('close', () => console.log(`[agent:${id}] Disconnected`));
-  ws.on('error', (err: Error) => console.error(`[agent:${id}] Error:`, err.message));
+  ws.on('close', () => {
+    // Abort all workers on disconnect
+    for (const [, w] of conn.workers) w.abort();
+    console.log(`[foh:${id}] Disconnected (${conn.workers.size} workers aborted)`);
+  });
+  ws.on('error', (err: Error) => console.error(`[foh:${id}] Error:`, err.message));
 }
 
 // ---------------------------------------------------------------------------
@@ -426,10 +520,13 @@ function handleConnection(ws: WebSocket): void {
 // ---------------------------------------------------------------------------
 
 const wss = new WebSocketServer({ port: WS_PORT });
-const toolNames = buildTools({ ws: null as any, id: '0', agent: null as any, processing: false, runners: [] }).map(t => t.name);
-console.log(`Agent server (Pi agent-core) on ws://localhost:${WS_PORT}`);
-console.log(`Model: ${VOICE_MODEL.id} via ${VOICE_MODEL.baseUrl}`);
-console.log(`Tools: ${toolNames.join(', ')}`);
+const dummyConn = { ws: null as any, id: '0', agent: null as any, processing: false, workers: new Map(), workerCounter: 0 };
+const toolNames = buildFohTools(dummyConn).map(t => t.name);
+console.log(`Agent server (FOH/worker architecture) on ws://localhost:${WS_PORT}`);
+console.log(`FOH model: ${FOH_MODEL.id} via OpenRouter (Groq-hosted)`);
+console.log(`Worker models: research=${RESEARCH_MODEL.id}, shell/browser=${WORKER_MODEL.id}`);
+console.log(`FOH tools: ${toolNames.join(', ')}`);
+console.log(`Worker types: research (AgentRunner), shell (WorkerAgent), browser (WorkerAgent)`);
 
 wss.on('connection', handleConnection);
 wss.on('error', (err: Error) => console.error('[agent] Server error:', err.message));
