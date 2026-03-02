@@ -24,9 +24,10 @@ const LLM_ENDPOINT = process.env.LLM_ENDPOINT || 'https://api.anthropic.com/v1/m
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const LLM_MODEL = 'claude-sonnet-4-20250514';
 const LLM_MAX_TOKENS = 4096;
-const SUB_RUNNER_MAX_ITERATIONS = 15;  // per sub-query
+const SUB_RUNNER_MAX_ITERATIONS = 10;  // per sub-query (reduced — Tavily is faster than browsing)
 const CDP_HOST = process.env.CDP_HOST || 'localhost';
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222');
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,6 +96,33 @@ async function runAgentBrowser(args: string[]): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Tavily web search
+// ---------------------------------------------------------------------------
+
+async function tavilySearch(query: string, maxResults: number = 5, depth: 'basic' | 'advanced' = 'basic'): Promise<string> {
+  if (!TAVILY_API_KEY) return 'Error: TAVILY_API_KEY not configured';
+  const res = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      api_key: TAVILY_API_KEY,
+      query,
+      search_depth: depth,
+      max_results: maxResults,
+      include_answer: true,
+    }),
+  });
+  if (!res.ok) return `Tavily error ${res.status}: ${await res.text()}`;
+  const data: any = await res.json();
+  const parts: string[] = [];
+  if (data.answer) parts.push(`Answer: ${data.answer}\n`);
+  for (const r of data.results || []) {
+    parts.push(`### ${r.title}\nURL: ${r.url}\n${r.content}\n`);
+  }
+  return parts.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // LLM call
 // ---------------------------------------------------------------------------
 
@@ -144,15 +172,21 @@ function send(ws: WebSocket, msg: Record<string, unknown>): void {
 
 const SUB_RUNNER_TOOLS = [
   {
+    name: 'web_search',
+    description: `Search the web. Returns an AI answer plus structured source results with extracted content. This is your PRIMARY research tool — use it first, use browse only if you need to visit a specific page for deeper extraction.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Search query — be specific' },
+        max_results: { type: 'number', description: 'Results to return (1-10, default 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'browse',
-    description: `Browse the web. Commands:
-- open <url>: Navigate to a URL
-- snapshot: Full page content
-- snapshot -i: Interactive elements with @refs
-- click @<ref>: Click an element
-- scroll down/up: Scroll
-
-Workflow: open URL → snapshot to read → follow links → extract info.`,
+    description: `Visit a specific URL and extract its content. Use only when web_search results reference a page you need to read in full.
+Commands: open <url>, get text body, snapshot -i, click @<ref>, scroll down`,
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -180,21 +214,22 @@ async function runSubQuery(
   console.log(`${tag} Starting: "${query}"`);
   onProgress(`Sub-query ${index + 1}: ${query}`);
 
-  const systemPrompt = `You are a focused research sub-agent. You have ONE specific query to research. Browse the web, find relevant information, and return structured findings.
+  const systemPrompt = `You are a focused research sub-agent. You have ONE specific query to research.
 
 Rules:
+- Start with web_search — it returns clean, structured results instantly
+- Only use browse if you need to read a specific page in more depth
 - Stay focused on your specific query — don't go off-topic
-- Open 2-3 relevant pages max, read them thoroughly (use snapshot)
 - Extract concrete facts: names, numbers, dates, URLs
-- When you have enough info, stop browsing and respond with your findings
-- Your final response (when you stop using tools) should be a structured summary of what you found, in markdown
-- Include a list of key URLs you found useful
+- 1-3 tool calls should be enough. Don't over-search.
+- Your final response (when you stop using tools) should be a structured summary in markdown
+- Include source URLs
 
 Today is ${new Date().toISOString().split('T')[0]}.`;
 
   const history: ConversationMessage[] = [{
     role: 'user',
-    content: `Research this specific query: ${query}\n\nSearch the web, read 2-3 relevant pages, and report back with structured findings.`,
+    content: `Research this specific query: ${query}\n\nUse web_search first, then browse specific pages if needed. Report back with structured findings.`,
   }];
 
   let iterations = 0;
@@ -229,17 +264,30 @@ Today is ${new Date().toISOString().split('T')[0]}.`;
     const toolResults: ContentBlock[] = [];
     for (const block of response.content) {
       if (block.type === 'tool_use' && block.id && block.name && block.input) {
-        const command = String(block.input.command || '');
-        const args = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-        const cleanArgs = args.map(a => a.replace(/^["']|["']$/g, ''));
-        console.log(`${tag} browse: ${cleanArgs.join(' ')}`);
+        let output: string;
 
-        // Track URLs we visit
-        if (cleanArgs[0] === 'open' && cleanArgs[1]) {
-          keyUrls.push({ title: query, url: cleanArgs[1] });
+        if (block.name === 'web_search') {
+          const searchQuery = String(block.input.query || '');
+          const maxResults = (block.input.max_results as number) || 5;
+          console.log(`${tag} web_search: "${searchQuery}"`);
+          output = await tavilySearch(searchQuery, maxResults);
+          // Extract URLs from results for tracking
+          const urlMatches = output.matchAll(/URL: (https?:\/\/\S+)/g);
+          for (const m of urlMatches) {
+            keyUrls.push({ title: searchQuery.substring(0, 40), url: m[1] });
+          }
+        } else {
+          // browse
+          const command = String(block.input.command || '');
+          const args = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+          const cleanArgs = args.map(a => a.replace(/^["']|["']$/g, ''));
+          console.log(`${tag} browse: ${cleanArgs.join(' ')}`);
+          if (cleanArgs[0] === 'open' && cleanArgs[1]) {
+            keyUrls.push({ title: query, url: cleanArgs[1] });
+          }
+          output = await runAgentBrowser(cleanArgs);
         }
 
-        const output = await runAgentBrowser(cleanArgs);
         const maxLen = 8000;
         const truncated = output.length > maxLen
           ? output.substring(0, maxLen) + `\n... (truncated)`

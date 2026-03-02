@@ -35,6 +35,8 @@ function requireEnv(name: string): string {
 
 const CDP_HOST = process.env.CDP_HOST || 'localhost';
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222');
+const AUTH_CDP_PORT = parseInt(process.env.AUTH_CDP_PORT || '9223');
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
 
 // Voice credentials — server-side, sent to client in init
 const DEEPGRAM_API_KEY = requireEnv('DEEPGRAM_API_KEY');
@@ -172,6 +174,64 @@ Workflow: open URL → snapshot -i to see interactive elements → click/type us
     },
   },
   {
+    name: 'web_search',
+    description: `Search the web using Tavily API. Returns structured, clean results with extracted content — much better than browser-based Google scraping. Use for any information lookup, fact-finding, or research query.
+
+Returns an AI-generated answer plus up to 10 source results with extracted content. Use search_depth 'advanced' for thorough research, 'basic' for quick lookups.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search query — be specific and include relevant context/constraints',
+        },
+        search_depth: {
+          type: 'string',
+          enum: ['basic', 'advanced'],
+          description: 'basic = fast/cheap (3-5 results), advanced = thorough (5-10 results with deeper extraction). Default: basic.',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Max results to return (1-10). Default: 5.',
+        },
+        include_domains: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional: limit search to these domains (e.g. ["linkedin.com", "crunchbase.com"])',
+        },
+        exclude_domains: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional: exclude these domains from results',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'auth_browse',
+    description: `Control the user's authenticated browser (their real Brave with logged-in sessions — LinkedIn, X/Twitter, Gmail, etc.). Connected via SSH tunnel on port ${AUTH_CDP_PORT}.
+
+Same commands as browse, but runs against the user's actual browser with real auth cookies. Use for:
+- Viewing LinkedIn profiles, connections, and job posts
+- Reading X/Twitter feeds and threads
+- Accessing any site the user is logged into
+
+Do NOT use for general research — use web_search or browse instead. Only use auth_browse when you specifically need the user's authenticated session.
+
+Common commands: open <url>, snapshot -i, click @<ref>, get text <selector>, screenshot`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        command: {
+          type: 'string',
+          description: 'agent-browser command (same syntax as browse tool)',
+        },
+      },
+      required: ['command'],
+    },
+  },
+  {
     name: 'research',
     description: `Launch a background research agent that autonomously browses the web, collects information, and builds a research document. Use when the user asks to research a topic, investigate something, or find information that requires visiting multiple pages.
 
@@ -246,18 +306,21 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
-let cdpWsUrl: string | null = null;
+// CDP WebSocket URL cache per port
+const cdpWsUrls: Map<number, string> = new Map();
 
-async function getCdpWsUrl(): Promise<string> {
-  if (cdpWsUrl) return cdpWsUrl;
-  const res = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/version`);
+async function getCdpWsUrl(port: number = CDP_PORT): Promise<string> {
+  const cached = cdpWsUrls.get(port);
+  if (cached) return cached;
+  const res = await fetch(`http://${CDP_HOST}:${port}/json/version`);
   const data: any = await res.json();
-  cdpWsUrl = data.webSocketDebuggerUrl;
-  return cdpWsUrl!;
+  const wsUrl = data.webSocketDebuggerUrl;
+  cdpWsUrls.set(port, wsUrl);
+  return wsUrl;
 }
 
-async function runAgentBrowser(args: string[]): Promise<string> {
-  const wsUrl = await getCdpWsUrl();
+async function runAgentBrowser(args: string[], port: number = CDP_PORT): Promise<string> {
+  const wsUrl = await getCdpWsUrl(port);
   try {
     const { stdout, stderr } = await execFileAsync(
       'agent-browser', ['--cdp', wsUrl, ...args],
@@ -268,6 +331,69 @@ async function runAgentBrowser(args: string[]): Promise<string> {
     const output = (e.stdout || '') + (e.stderr || '');
     return output.trim() || `Error: ${e.message}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tavily web search
+// ---------------------------------------------------------------------------
+
+interface TavilyResult {
+  title: string;
+  url: string;
+  content: string;
+  score: number;
+}
+
+interface TavilyResponse {
+  answer?: string;
+  results: TavilyResult[];
+}
+
+async function tavilySearch(opts: {
+  query: string;
+  search_depth?: 'basic' | 'advanced';
+  max_results?: number;
+  include_domains?: string[];
+  exclude_domains?: string[];
+}): Promise<string> {
+  if (!TAVILY_API_KEY) return 'Error: TAVILY_API_KEY not configured';
+
+  const body: Record<string, unknown> = {
+    api_key: TAVILY_API_KEY,
+    query: opts.query,
+    search_depth: opts.search_depth || 'basic',
+    max_results: opts.max_results || 5,
+    include_answer: true,
+  };
+  if (opts.include_domains?.length) body.include_domains = opts.include_domains;
+  if (opts.exclude_domains?.length) body.exclude_domains = opts.exclude_domains;
+
+  const res = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    return `Tavily error ${res.status}: ${errText}`;
+  }
+
+  const data = await res.json() as TavilyResponse;
+
+  // Format into a clean, LLM-friendly text block
+  const parts: string[] = [];
+  if (data.answer) {
+    parts.push(`**Answer:** ${data.answer}`);
+    parts.push('');
+  }
+  parts.push(`**Sources (${data.results.length}):**`);
+  for (const r of data.results) {
+    parts.push(`\n### ${r.title}`);
+    parts.push(`URL: ${r.url}`);
+    parts.push(r.content);
+  }
+  return parts.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -306,10 +432,12 @@ The user speaks to you and you speak back via TTS.
 
 ## Tools
 
-You have shell, read_file, write_file, browse, create_pane, and research tools. Use them when needed, but:
+You have shell, read_file, write_file, web_search, browse, auth_browse, create_pane, and research tools. Use them when needed, but:
 - For simple questions, just answer. Don't run a shell command to confirm things you already know.
 - For complex investigations, tell the user you're looking into it, THEN use tools.
-- For research tasks, delegate to the research tool — don't manually browse.
+- For information lookup, use web_search first — it's fast and returns clean structured results.
+- For browsing specific pages, use browse (server's Chromium) or auth_browse (user's authenticated browser).
+- Only use auth_browse when you need the user's logged-in sessions (LinkedIn, X/Twitter, Gmail, etc.).
 - Don't over-create panes. Keep the workspace clean.
 
 ## Workspace
@@ -439,25 +567,48 @@ async function executeTool(
       send(conn.ws, { type: 'command', name: 'scroll_pane', input: { label, direction, amount } });
       return `Scrolled "${label}" ${direction} (${amount}).`;
     }
-    case 'browse': {
+    case 'browse':
+    case 'auth_browse': {
       const command = String(input.command || '');
       const args = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-      // Strip quotes from args
       const cleanArgs = args.map(a => a.replace(/^["']|["']$/g, ''));
-      console.log(`[agent] browse: ${cleanArgs.join(' ')}`);
+      const port = name === 'auth_browse' ? AUTH_CDP_PORT : CDP_PORT;
+      const label = name === 'auth_browse' ? 'auth_browse' : 'browse';
+      console.log(`[agent] ${label}:${port}: ${cleanArgs.join(' ')}`);
 
       // If it's an 'open' command, also tell the client to update the browser pane
       if (cleanArgs[0] === 'open' && cleanArgs[1]) {
         send(conn.ws, { type: 'command', name: 'navigate_pane', input: { label: '', url: cleanArgs[1] } });
       }
 
-      const output = await runAgentBrowser(cleanArgs);
-      // Truncate very long output to avoid blowing context
-      const maxLen = 8000;
-      const truncated = output.length > maxLen
-        ? output.substring(0, maxLen) + `\n... (truncated, ${output.length - maxLen} chars omitted)`
-        : output;
-      return truncated;
+      try {
+        const output = await runAgentBrowser(cleanArgs, port);
+        const maxLen = 8000;
+        const truncated = output.length > maxLen
+          ? output.substring(0, maxLen) + `\n... (truncated, ${output.length - maxLen} chars omitted)`
+          : output;
+        return truncated;
+      } catch (e: any) {
+        if (name === 'auth_browse') {
+          return `Error: Could not connect to authenticated browser on port ${AUTH_CDP_PORT}. Is the SSH tunnel running? (ssh -NR ${AUTH_CDP_PORT}:localhost:9222 valley-silver.exe.xyz)`;
+        }
+        throw e;
+      }
+    }
+    case 'web_search': {
+      const query = String(input.query);
+      console.log(`[agent:${conn.id}] web_search: "${query.substring(0, 80)}"`);
+      const result = await tavilySearch({
+        query,
+        search_depth: (input.search_depth as 'basic' | 'advanced') || 'basic',
+        max_results: (input.max_results as number) || 5,
+        include_domains: input.include_domains as string[] | undefined,
+        exclude_domains: input.exclude_domains as string[] | undefined,
+      });
+      const maxLen = 10000;
+      return result.length > maxLen
+        ? result.substring(0, maxLen) + `\n... (truncated)`
+        : result;
     }
     case 'research': {
       const goal = String(input.goal);
