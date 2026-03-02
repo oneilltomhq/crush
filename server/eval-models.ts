@@ -352,6 +352,7 @@ async function main() {
 
   let resultA: EvalResult | null = null;
   let resultB: EvalResult | null = null;
+  let resultC: EvalResult | null = null;
 
   if (!strategies || strategies === 'A' || strategies === 'both') {
     // Strategy A: Claude Sonnet 4 everywhere (exe-gateway)
@@ -365,6 +366,13 @@ async function main() {
     resultB = await runResearch('B: GLM-5 + MiniMax M2.5', GLM5, MINIMAX, goal);
     fs.writeFileSync('/tmp/eval-report-B.md', resultB.report);
     console.log('  Written to /tmp/eval-report-B.md');
+  }
+
+  if (strategies === 'C') {
+    // Strategy C: MiniMax M2.5 everywhere (cheapest)
+    resultC = await runResearch('C: MiniMax M2.5 everywhere', MINIMAX, MINIMAX, goal);
+    fs.writeFileSync('/tmp/eval-report-C.md', resultC.report);
+    console.log('  Written to /tmp/eval-report-C.md');
   }
 
   // Summary comparison
@@ -396,6 +404,12 @@ async function main() {
       ['Duration', 'N/A', `${(resultB.durationMs / 1000).toFixed(1)}s`],
       ['Report length', 'N/A', `${resultB.report.length} chars`],
       ['Total cost', 'N/A', `$${resultB.totalCost.toFixed(4)}`],
+    );
+  } else if (resultC) {
+    rows.push(
+      ['Duration', 'N/A', `${(resultC.durationMs / 1000).toFixed(1)}s`],
+      ['Report length', 'N/A', `${resultC.report.length} chars`],
+      ['Total cost', 'N/A', `$${resultC.totalCost.toFixed(4)}`],
     );
   }
 

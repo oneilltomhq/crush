@@ -30,6 +30,31 @@ import { AgentRunner, type RunnerStatus } from './agent-runner.js';
 registerBuiltInApiProviders();
 
 // ---------------------------------------------------------------------------
+// Research model config — MiniMax M2.5 via OpenRouter (cheapest option)
+// $0.30/$1.10 per Mtok, ~$0.05/research report
+// ---------------------------------------------------------------------------
+const RESEARCH_MODEL: Model<'openai-completions'> = {
+  id: 'minimax/minimax-m2.5',
+  name: 'MiniMax M2.5',
+  api: 'openai-completions',
+  provider: 'openrouter',
+  baseUrl: 'https://openrouter.ai/api/v1',
+  reasoning: true,
+  input: ['text'],
+  cost: { input: 0.3, output: 1.1, cacheRead: 0.15, cacheWrite: 0 },
+  contextWindow: 196608,
+  maxTokens: 65536,
+};
+
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
+if (!OPENROUTER_KEY) console.warn('[agent-server] OPENROUTER_API_KEY not set — research tool will fail');
+
+function researchApiKey(provider: string): string {
+  if (provider === 'openrouter') return OPENROUTER_KEY;
+  return 'gateway';
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -176,6 +201,9 @@ function buildTools(conn: Connection): AgentTool[] {
         goal,
         ws: conn.ws,
         notesPaneLabel,
+        model: RESEARCH_MODEL,
+        // subModel defaults to model when not specified
+        getApiKey: researchApiKey,
         onComplete: (summary) => {
           console.log(`[agent:${conn.id}] Research complete: ${summary.substring(0, 80)}`);
           send(conn.ws, { type: 'research_complete', runnerId: runner.id, summary });
