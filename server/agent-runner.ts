@@ -26,7 +26,7 @@ registerBuiltInApiProviders();
 
 const SUB_RUNNER_MAX_ITERATIONS = 10;
 
-// Default model — can be overridden by passing a different Model to the runner
+// Default model — can be overridden by passing different Models to the runner
 const DEFAULT_MODEL: Model<'anthropic-messages'> = {
   id: 'claude-sonnet-4-20250514',
   name: 'Sonnet 4',
@@ -40,6 +40,14 @@ const DEFAULT_MODEL: Model<'anthropic-messages'> = {
   maxTokens: 4096,
 };
 
+// API key resolver — returns appropriate key per provider
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+
+function resolveApiKey(provider: string): string {
+  if (provider === 'openrouter') return OPENROUTER_API_KEY;
+  return 'gateway'; // exe-gateway accepts any non-empty key
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -48,7 +56,12 @@ export interface AgentRunnerOpts {
   goal: string;
   ws: WebSocket;
   notesPaneLabel: string;
+  /** Model for orchestration (planning + synthesis). Defaults to Claude Sonnet 4. */
   model?: Model<any>;
+  /** Model for sub-runners (research sub-queries). Defaults to same as model. */
+  subModel?: Model<any>;
+  /** API key resolver. Defaults to exe-gateway/openrouter auto-detect. */
+  getApiKey?: (provider: string) => string;
   onComplete?: (summary: string) => void;
   onProgress?: (status: string) => void;
   onError?: (err: string) => void;
@@ -81,17 +94,20 @@ async function oneShot(
   systemPrompt: string,
   userMessage: string,
   maxTokens: number = 4096,
-): Promise<string> {
+  getApiKey: (provider: string) => string = resolveApiKey,
+): Promise<{ text: string; usage: any }> {
   const response: AssistantMessage = await completeSimple(model, {
     systemPrompt,
     messages: [{ role: 'user', content: userMessage, timestamp: Date.now() }],
-  }, { apiKey: 'not-needed', maxTokens });
+  }, { apiKey: getApiKey(model.provider), maxTokens });
 
-  return response.content
+  const text = response.content
     .filter(b => b.type === 'text')
     .map(b => (b as any).text)
     .join('\n')
     .trim();
+
+  return { text, usage: response.usage };
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +120,7 @@ async function runSubQuery(
   parentId: string,
   model: Model<any>,
   onProgress: (msg: string) => void,
+  getApiKey: (provider: string) => string = resolveApiKey,
 ): Promise<SubRunnerResult> {
   const tag = `[${parentId}:sub${index}]`;
   console.log(`${tag} Starting: "${query}"`);
@@ -129,7 +146,7 @@ Rules:
 Today is ${new Date().toISOString().split('T')[0]}.`,
       tools: researchSubTools(),
     },
-    getApiKey: async () => 'not-needed',
+    getApiKey: async (provider) => getApiKey(provider || model.provider),
   });
 
   // Track URLs from tool calls
@@ -159,9 +176,12 @@ Today is ${new Date().toISOString().split('T')[0]}.`,
     return { query, findings: `Error researching: ${err.message}`, keyUrls };
   }
 
-  // Extract the final assistant response (the last message)
+  // Extract the final assistant response — find last message with actual text
   const messages = agent.state.messages;
-  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+  const lastAssistant = [...messages].reverse().find(m => {
+    if (m.role !== 'assistant') return false;
+    return (m as any).content.some((b: any) => b.type === 'text' && b.text?.trim());
+  });
   if (!lastAssistant || lastAssistant.role !== 'assistant') {
     return { query, findings: 'No findings produced.', keyUrls };
   }
@@ -188,6 +208,8 @@ export class AgentRunner {
   private ws: WebSocket;
   private notesPaneLabel: string;
   private model: Model<any>;
+  private subModel: Model<any>;
+  private getApiKeyFn: (provider: string) => string;
   private state: RunnerStatus['state'] = 'planning';
   private subQueryStates: { query: string; state: string; iterations: number }[] = [];
   private onComplete?: (summary: string) => void;
@@ -201,6 +223,8 @@ export class AgentRunner {
     this.ws = opts.ws;
     this.notesPaneLabel = opts.notesPaneLabel;
     this.model = opts.model || DEFAULT_MODEL;
+    this.subModel = opts.subModel || this.model;
+    this.getApiKeyFn = opts.getApiKey || resolveApiKey;
     this.onComplete = opts.onComplete;
     this.onProgress = opts.onProgress;
     this.onError = opts.onError;
@@ -252,8 +276,9 @@ export class AgentRunner {
     this.progress('Planning research sub-queries...');
 
     let subQueries: string[];
+    const usageLog: { phase: string; model: string; usage: any }[] = [];
     try {
-      const planText = await oneShot(
+      const planResult = await oneShot(
         this.model,
         `You are a research planner. Given a research goal, decompose it into 3-6 specific, independent sub-queries that can be researched in parallel.
 
@@ -265,11 +290,20 @@ Example:
 Keep queries specific and searchable. Each should target a distinct aspect of the research goal.`,
         `Research goal: ${this.goal}`,
         1024,
+        this.getApiKeyFn,
       );
+      usageLog.push({ phase: 'plan', model: this.model.id, usage: planResult.usage });
 
-      const match = planText.match(/\[([\s\S]*?)\]/);
-      if (!match) throw new Error(`Failed to parse plan: ${planText.substring(0, 200)}`);
-      subQueries = JSON.parse(`[${match[1]}]`);
+      // Strip markdown code fences and parse JSON array
+      const stripped = planResult.text.replace(/```(?:json)?\n?/g, '').trim();
+      let parsed: string[] | null = null;
+      try { const arr = JSON.parse(stripped); if (Array.isArray(arr)) parsed = arr; } catch {}
+      if (!parsed) {
+        const match = stripped.match(/\[([\s\S]*?)\]/);
+        if (!match) throw new Error(`No JSON array in plan: ${stripped.substring(0, 200)}`);
+        parsed = JSON.parse(`[${match[1]}]`);
+      }
+      subQueries = parsed;
       console.log(`${tag} Plan: ${subQueries.length} sub-queries`);
     } catch (err: any) {
       console.error(`${tag} Planning failed:`, err.message);
@@ -296,9 +330,9 @@ Keep queries specific and searchable. Each should target a distinct aspect of th
     const results = await Promise.all(
       subQueries.map((query, index) => {
         this.subQueryStates[index].state = 'running';
-        return runSubQuery(query, index, this.id, this.model, (msg) => {
+        return runSubQuery(query, index, this.id, this.subModel, (msg) => {
           this.subQueryStates[index].state = msg;
-        }).then(result => {
+        }, this.getApiKeyFn).then(result => {
           this.subQueryStates[index].state = 'complete';
           this.progress(`Completed: ${query.substring(0, 50)}...`);
           return result;
@@ -332,7 +366,7 @@ Keep queries specific and searchable. Each should target a distinct aspect of th
     ).join('\n\n---\n\n');
 
     try {
-      const report = await oneShot(
+      const synthResult = await oneShot(
         this.model,
         `You are a research synthesizer. You've received findings from ${results.length} parallel research sub-queries. Combine them into a single, well-organized research report in markdown.
 
@@ -344,14 +378,21 @@ Rules:
 - Be comprehensive but well-structured`,
         `Research goal: ${this.goal}\n\n# Raw Findings\n\n${findingsSummary}`,
         4096,
+        this.getApiKeyFn,
       );
+      usageLog.push({ phase: 'synthesize', model: this.model.id, usage: synthResult.usage });
 
-      this.updateNotes(report);
-      console.log(`${tag} Final report: ${report.length} chars`);
+      // Log total usage summary
+      const totalCost = usageLog.reduce((sum, u) => sum + (u.usage?.cost?.total || 0), 0);
+      console.log(`${tag} Usage summary: ${JSON.stringify(usageLog.map(u => ({ phase: u.phase, model: u.model, cost: u.usage?.cost?.total?.toFixed(6) })))}`);
+      console.log(`${tag} Total tracked cost: $${totalCost.toFixed(6)} (excludes sub-runner tool loops)`);
+
+      this.updateNotes(synthResult.text);
+      console.log(`${tag} Final report: ${synthResult.text.length} chars`);
 
       this.state = 'complete';
       this.progress('Research complete!');
-      this.onComplete?.(report.substring(0, 200));
+      this.onComplete?.(synthResult.text.substring(0, 200));
     } catch (err: any) {
       console.error(`${tag} Synthesis failed:`, err.message);
       const rawReport = `# Research: ${this.goal}\n\n` +

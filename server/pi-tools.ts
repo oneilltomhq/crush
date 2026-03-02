@@ -27,7 +27,7 @@ const execFileAsync = promisify(execFile);
 const CDP_HOST = process.env.CDP_HOST || 'localhost';
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222');
 const AUTH_CDP_PORT = parseInt(process.env.AUTH_CDP_PORT || '9223');
-const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
+function getTavilyKey(): string { return process.env.TAVILY_API_KEY || ''; }
 const TODO_PATH = path.join(os.homedir(), '.openclaw', 'workspace', 'todo.md');
 const PROJECT_ROOT = '/home/exedev/crush';
 
@@ -84,10 +84,11 @@ export async function tavilySearch(opts: {
   include_domains?: string[];
   exclude_domains?: string[];
 }): Promise<string> {
-  if (!TAVILY_API_KEY) return 'Error: TAVILY_API_KEY not configured';
+  const tavilyKey = getTavilyKey();
+  if (!tavilyKey) return 'Error: TAVILY_API_KEY not configured';
 
   const body: Record<string, unknown> = {
-    api_key: TAVILY_API_KEY,
+    api_key: tavilyKey,
     query: opts.query,
     search_depth: opts.search_depth || 'basic',
     max_results: opts.max_results || 5,
