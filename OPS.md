@@ -24,13 +24,48 @@ The agent automates the user's real browser (with cookies, sessions, logins) via
 ### Establishing the tunnel
 
 From the user's machine:
-```
-ssh -R 9223:localhost:9222 valley-silver.exe.xyz
+```bash
+# Foreground (Ctrl+C to close) — good for short sessions
+ssh -NR 9223:localhost:9222 valley-silver.exe.xyz
 ```
 
-This forwards `localhost:9223` on the server to `localhost:9222` on the user's machine (the browser's CDP port).
+`-N` = no remote shell, tunnel only. `-R` = reverse-forward server:9223 → local:9222.
 
 **Why port 9223?** Port 9222 on the server is used by the server's own Chromium instance. 9223 is the dedicated tunnel port for the user's browser.
+
+### Long-running tunnel
+
+For a full work session, use a control socket so you can manage it cleanly:
+
+```bash
+# Start (backgrounds immediately)
+ssh -fNR 9223:localhost:9222 \
+  -o ServerAliveInterval=60 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -M -S /tmp/crush-tunnel \
+  valley-silver.exe.xyz
+
+# Check status
+ssh -S /tmp/crush-tunnel -O check valley-silver.exe.xyz
+
+# Close
+ssh -S /tmp/crush-tunnel -O exit valley-silver.exe.xyz
+```
+
+Flags:
+- `-f` = background after connecting
+- `-M -S /tmp/crush-tunnel` = control socket for later management
+- `ServerAliveInterval=60` = keepalive every 60s (survives Wi-Fi blips)
+- `ExitOnForwardFailure=yes` = fail immediately if port 9223 is already bound
+
+For truly persistent tunnels (auto-restart on disconnect), install `autossh`:
+```bash
+autossh -M 0 -fNR 9223:localhost:9222 \
+  -o ServerAliveInterval=60 \
+  -o ServerAliveCountMax=3 \
+  valley-silver.exe.xyz
+```
 
 ### Verifying the tunnel
 
@@ -63,13 +98,6 @@ await session.goto('https://linkedin.com');
 | `curl` returns but patchright fails | Browser closed/crashed | Restart browser with `--remote-debugging-port=9222` |
 | `Warning: remote port forwarding failed for listen port 9223` | Port already in use on server | Check `ss -tlnp \| grep 9223`, kill stale tunnel |
 | Connection drops after idle | SSH timeout | Add `-o ServerAliveInterval=60` to the ssh command |
-
-### Keeping the tunnel alive
-
-For persistent sessions, add keepalive:
-```
-ssh -R 9223:localhost:9222 -o ServerAliveInterval=60 -o ServerAliveCountMax=3 valley-silver.exe.xyz
-```
 
 ## Server services
 
