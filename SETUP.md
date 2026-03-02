@@ -47,7 +47,7 @@ npx tsx server/pty-relay.ts          # ws://localhost:8091
 npx tsx server/cdp-relay.ts          # ws://localhost:8090
 
 # 3. Voice relay — LLM bridge with tool use
-npx tsx server/voice-relay.ts        # ws://localhost:8092
+npx tsx server/agent-server.ts       # ws://localhost:8092
 
 # 4. Vite dev server — serves the extension UI
 npm run dev                          # http://localhost:3000
@@ -59,7 +59,7 @@ Or start them all in tmux:
 set -a; source .env; set +a
 tmux new-session -d -s ptyrelay  'npx tsx server/pty-relay.ts'
 tmux new-session -d -s cdprelay  'npx tsx server/cdp-relay.ts'
-tmux new-session -d -s voice     'npx tsx server/voice-relay.ts'
+tmux new-session -d -s agent     'npx tsx server/agent-server.ts'
 tmux new-session -d -s vite      'npm run dev'
 ```
 
@@ -107,7 +107,7 @@ For production, run `npm run build` first — the extension serves from `dist/`.
    │  Server processes       │
    │  - pty-relay   :8091    │ ← real bash via node-pty
    │  - cdp-relay   :8090    │ ← Chrome DevTools Protocol
-   │  - voice-relay :8092    │ ← Claude tool-use loop
+   │  - agent-server :8092    │ ← Claude tool-use loop
    │  - vite        :3000    │ ← dev server (proxies WS)
    └─────────────────────────┘
 ```

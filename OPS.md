@@ -101,11 +101,16 @@ await session.goto('https://linkedin.com');
 
 ## Server services
 
-| Service | Port | Description |
-|---|---|---|
-| Vite dev server | 3000 | 3D workspace UI |
-| busybox httpd | 8000 | Static file serving |
-| PTY relay | 8091 | Terminal WebSocket |
-| Voice relay | 8092 | Voice → LLM → tools |
-| Server Chromium | 9222 | Server-side browser (headless) |
-| User browser tunnel | 9223 | SSH reverse tunnel to user's browser |
+| Service | Port | tmux session | Description |
+|---|---|---|---|
+| Vite dev server | 3000 | `aiwm` | 3D workspace UI |
+| PTY relay | 8091 | `ptyrelay` | Terminal WebSocket |
+| Agent server | 8092 | `agent` | Text-in/text-out LLM tool-use loop (STT/TTS are client-side) |
+| CDP screencast relay | 8090 | `cdprelay` | Streams browser tab screenshots to BrowserPanes |
+| Server Chromium | 9222 | — | Agent's own browser for web research (no auth, disposable) |
+| User browser tunnel | 9223 | — | SSH reverse tunnel to user's authenticated browser |
+
+### Two browsers, two purposes
+
+- **Port 9222 (server Chromium)**: The agent's own headless browser for independent web research, screenshots, and disposable browsing. No authentication.
+- **Port 9223 (user tunnel)**: The user's real browser with all their logins (LinkedIn, X, Gmail, etc.). Used for authenticated actions via patchright. Requires the SSH tunnel to be active.

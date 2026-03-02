@@ -1,7 +1,7 @@
 /**
- * Voice WebSocket Relay — port 8092
+ * Agent Server — port 8092
  *
- * Text-only LLM bridge using Claude's native tool use.
+ * Text-in/text-out LLM agent loop using Claude's native tool use.
  * STT and TTS are client-side (ADR 005).
  *
  * Protocol (JSON text frames):
@@ -60,7 +60,7 @@ const TOOLS = [
 
 Examples:
 - ls -la src/
-- cat server/voice-relay.ts
+- cat server/agent-server.ts
 - git log --oneline -10
 - tmux capture-pane -t voice -p | tail -20
 - ps aux | grep node
@@ -282,7 +282,7 @@ function readTodo(): string {
 function writeTodo(content: string): void {
   fs.mkdirSync(path.dirname(TODO_PATH), { recursive: true });
   fs.writeFileSync(TODO_PATH, content, 'utf-8');
-  console.log('[voice] Updated todo file');
+  console.log('[agent] Updated todo file');
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +380,7 @@ async function executeTool(
   switch (name) {
     case 'shell': {
       const command = String(input.command);
-      console.log(`[voice:${conn.id}] shell: ${command.substring(0, 100)}`);
+      console.log(`[agent:${conn.id}] shell: ${command.substring(0, 100)}`);
       try {
         const { stdout, stderr } = await execFileAsync(
           'bash', ['-c', command],
@@ -444,7 +444,7 @@ async function executeTool(
       const args = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
       // Strip quotes from args
       const cleanArgs = args.map(a => a.replace(/^["']|["']$/g, ''));
-      console.log(`[voice] browse: ${cleanArgs.join(' ')}`);
+      console.log(`[agent] browse: ${cleanArgs.join(' ')}`);
 
       // If it's an 'open' command, also tell the client to update the browser pane
       if (cleanArgs[0] === 'open' && cleanArgs[1]) {
@@ -474,15 +474,15 @@ async function executeTool(
         ws: conn.ws,
         notesPaneLabel,
         onComplete: (summary) => {
-          console.log(`[voice:${conn.id}] Research complete: ${summary.substring(0, 80)}`);
+          console.log(`[agent:${conn.id}] Research complete: ${summary.substring(0, 80)}`);
           // Notify user via a response if they're not mid-conversation
           send(conn.ws, { type: 'research_complete', runnerId: runner.id, summary });
         },
         onProgress: (status) => {
-          console.log(`[voice:${conn.id}] Research progress: ${status}`);
+          console.log(`[agent:${conn.id}] Research progress: ${status}`);
         },
         onError: (err) => {
-          console.error(`[voice:${conn.id}] Research error: ${err}`);
+          console.error(`[agent:${conn.id}] Research error: ${err}`);
           send(conn.ws, { type: 'research_error', runnerId: runner.id, error: err });
         },
       });
@@ -511,7 +511,7 @@ async function executeTool(
       return 'Todo list updated.';
     }
     default:
-      console.warn(`[voice] Unknown tool: ${name}`);
+      console.warn(`[agent] Unknown tool: ${name}`);
       return `Unknown tool: ${name}`;
   }
 }
@@ -523,7 +523,7 @@ async function executeTool(
 async function processStart(conn: Connection): Promise<void> {
   if (conn.processing) return;
   conn.processing = true;
-  const tag = `[voice:${conn.id}]`;
+  const tag = `[agent:${conn.id}]`;
   console.log(`${tag} Conversation started — agent speaks first`);
 
   try {
@@ -571,7 +571,7 @@ async function processText(conn: Connection, userText: string): Promise<void> {
   }
 
   conn.processing = true;
-  const tag = `[voice:${conn.id}]`;
+  const tag = `[agent:${conn.id}]`;
   console.log(`${tag} "${userText.substring(0, 80)}${userText.length > 80 ? '...' : ''}"`);
 
   try {
@@ -656,7 +656,7 @@ let connectionCounter = 0;
 
 function handleConnection(ws: WebSocket): void {
   const id = String(++connectionCounter);
-  console.log(`[voice:${id}] Client connected`);
+  console.log(`[agent:${id}] Client connected`);
 
   const conn: Connection = { ws, id, history: [], processing: false, runners: [] };
 
@@ -683,8 +683,8 @@ function handleConnection(ws: WebSocket): void {
     }
   });
 
-  ws.on('close', () => console.log(`[voice:${id}] Disconnected`));
-  ws.on('error', (err: Error) => console.error(`[voice:${id}] Error:`, err.message));
+  ws.on('close', () => console.log(`[agent:${id}] Disconnected`));
+  ws.on('error', (err: Error) => console.error(`[agent:${id}] Error:`, err.message));
 }
 
 // ---------------------------------------------------------------------------
@@ -692,10 +692,10 @@ function handleConnection(ws: WebSocket): void {
 // ---------------------------------------------------------------------------
 
 const wss = new WebSocketServer({ port: WS_PORT });
-console.log(`Voice relay (tool-use LLM bridge) on ws://localhost:${WS_PORT}`);
+console.log(`Agent server (LLM tool-use loop) on ws://localhost:${WS_PORT}`);
 console.log(`LLM: ${LLM_ENDPOINT}`);
 console.log(`Todo: ${TODO_PATH}`);
 console.log(`Tools: ${TOOLS.map(t => t.name).join(', ')}`);
 
 wss.on('connection', handleConnection);
-wss.on('error', (err: Error) => console.error('[voice] Server error:', err.message));
+wss.on('error', (err: Error) => console.error('[agent] Server error:', err.message));

@@ -26,7 +26,7 @@ Server-authoritative (see ADR 004). The browser is a thin rendering client.
 - **`TaskGraph`** (`src/task-graph.ts`) — Tree of `TaskNode`s with status lifecycle (pending→active→complete), optional `ResourceDescriptor`, parent/child decomposition. Events drive the scene.
 - **`Pane`** hierarchy (`src/pane.ts`) — `PtyPane` (remote shell), `BrowserPane` (CDP screencast), `TextPane` (markdown/text), `TerminalPane` (local Ghostty WASM), `PlainPane` (solid color). Each wraps a Three.js mesh + texture.
 - **`AgentRunner`** (`server/agent-runner.ts`) — Autonomous background worker. Decomposes goals into parallel sub-queries, each with its own LLM conversation + browser session.
-- **`VoiceClient`** (`src/voice-client.ts`) → **`voice-relay`** (`server/voice-relay.ts`) — Speech→Claude→tools→speech. The voice relay dispatches to tools, creates panes, kicks off AgentRunners.
+- **`VoiceClient`** (`src/voice-client.ts`) → **`agent-server`** (`server/agent-server.ts`) — Speech→Claude→tools→speech. The agent server dispatches to tools, creates panes, kicks off AgentRunners.
 - **`grid-scene`** (`src/grid-scene.ts`) — The 3D spatial scene. Responds to TaskGraph events, manages camera, atmosphere, pane layout.
 
 ## Running
