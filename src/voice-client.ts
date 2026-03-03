@@ -96,6 +96,9 @@ export class VoiceClient {
   // TTS
   private abortTTS: AbortController | null = null;
   private currentAudio: HTMLAudioElement | null = null;
+  private currentTTSSource: AudioBufferSourceNode | null = null;
+  private pendingGreeting: string | null = null;
+  private ttsAudioContext: AudioContext | null = null;
 
   constructor(opts: VoiceClientOptions = {}) {
     this.opts = opts;
@@ -173,6 +176,22 @@ export class VoiceClient {
   async startConversation(): Promise<void> {
     if (this._conversationActive) return;
     this._conversationActive = true;
+
+    // Play buffered greeting if server already sent one
+    if (this.pendingGreeting && this.opts.deepgramApiKey) {
+      const greeting = this.pendingGreeting;
+      this.pendingGreeting = null;
+      console.log('[voice] Playing buffered greeting');
+      // speakTTS will call afterResponse → startListening when done
+      this.speakTTS(greeting);
+      // Ensure mic is ready in parallel so listening starts immediately after TTS
+      this.ensureMic().catch((err) => {
+        console.error('[voice] Mic error:', err);
+        this.opts.onError?.(`Mic error: ${err}`);
+      });
+      return;
+    }
+
     try {
       await this.ensureMic();
       this.startListening();
@@ -193,9 +212,18 @@ export class VoiceClient {
 
   /** Tell server to initiate conversation (agent speaks first). */
   sendStartSignal(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ type: 'start' }));
-    this.setState('processing');
+    // Greeting now auto-starts on connection; this is a no-op kept for compat.
+    // If greeting is already buffered, startConversation() will play it.
+  }
+
+  /** Call from a user gesture (click/tap) to unlock audio playback. */
+  unlockAudio(): void {
+    if (!this.ttsAudioContext) {
+      this.ttsAudioContext = new AudioContext();
+    }
+    if (this.ttsAudioContext.state === 'suspended') {
+      this.ttsAudioContext.resume();
+    }
   }
 
   /** Send text directly (skip STT). */
@@ -373,7 +401,11 @@ export class VoiceClient {
 
       case 'response':
         this.opts.onResponse?.(msg.text);
-        if (msg.text && this.opts.deepgramApiKey) {
+        if (msg.text && !this._conversationActive) {
+          // Greeting arrived before user tapped — buffer it
+          console.log('[voice] Buffering greeting (conversation not active)');
+          this.pendingGreeting = msg.text;
+        } else if (msg.text && this.opts.deepgramApiKey) {
           this.speakTTS(msg.text);
         } else {
           // No TTS key — go straight back to listening or idle
@@ -420,6 +452,10 @@ export class VoiceClient {
       this.currentAudio.pause();
       this.currentAudio = null;
     }
+    if (this.currentTTSSource) {
+      try { this.currentTTSSource.stop(); } catch (_) { /* already stopped */ }
+      this.currentTTSSource = null;
+    }
   }
 
   private async speakTTS(text: string): Promise<void> {
@@ -456,14 +492,29 @@ export class VoiceClient {
       }
 
       const blob = new Blob(chunks, { type: 'audio/mpeg' });
-      const audioUrl = URL.createObjectURL(blob);
-      const audio = new Audio(audioUrl);
-      this.currentAudio = audio;
+      const arrayBuffer = await blob.arrayBuffer();
+
+      // Use Web Audio API — AudioContext stays unlocked after user gesture
+      if (!this.ttsAudioContext) {
+        this.ttsAudioContext = new AudioContext();
+      }
+      if (this.ttsAudioContext.state === 'suspended') {
+        await this.ttsAudioContext.resume();
+      }
+
+      const audioBuffer = await this.ttsAudioContext.decodeAudioData(arrayBuffer);
+      const source = this.ttsAudioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.ttsAudioContext.destination);
+      this.currentTTSSource = source;
 
       await new Promise<void>((resolve, reject) => {
-        audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(audioUrl); reject(new Error('Playback error')); };
-        audio.play().catch(reject);
+        source.onended = () => { this.currentTTSSource = null; resolve(); };
+        try {
+          source.start();
+        } catch (e) {
+          reject(e);
+        }
       });
     } catch (err: any) {
       if (err.name === 'AbortError') return;  // cancelled, caller handles state

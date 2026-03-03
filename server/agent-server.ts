@@ -612,13 +612,19 @@ function handleConnection(ws: WebSocket): void {
     },
   });
 
+  // Auto-start greeting — don't wait for client 'start' message
+  processStart(conn).catch((err: Error) => {
+    console.error(`[foh:${id}] Auto-start error:`, err.message);
+  });
+
   ws.on('message', async (raw: Buffer | string) => {
     let msg: { type: string; text?: string };
     try { msg = JSON.parse(raw.toString()); }
     catch { send(ws, { type: 'error', message: 'Invalid JSON' }); return; }
 
     if (msg.type === 'start') {
-      await processStart(conn);
+      // Legacy start signal — if greeting already sent, ignore.
+      // If still processing, client will get the response when ready.
     } else if (msg.type === 'text' && msg.text?.trim()) {
       await processText(conn, msg.text.trim());
     }

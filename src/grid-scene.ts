@@ -136,18 +136,11 @@ async function init() {
     overlay.style.transition = 'opacity 0.4s';
     setTimeout(() => overlay.remove(), 500);
 
-    // Unlock audio playback with a silent buffer (user gesture required)
-    try {
-      const ctx = new AudioContext();
-      const buf = ctx.createBuffer(1, 1, 22050);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start();
-      await ctx.close();
-    } catch (_) { /* ignore */ }
+    // Unlock audio playback (user gesture required for AudioContext)
+    voiceClient?.unlockAudio();
 
-    // Ask server for opening line (will trigger TTS)
+    // sendStartSignal is now a no-op — greeting auto-starts on connection.
+    // startConversation() below will play the buffered greeting.
     voiceClient?.sendStartSignal();
 
     // Start mic capture
