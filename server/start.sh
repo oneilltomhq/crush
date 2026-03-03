@@ -43,4 +43,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-exec npx tsx server/agent-server.ts
+# --- Logging ---
+LOG_DIR="server/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/$(date +%Y%m%d-%H%M%S).log"
+echo "Logging to $LOG_FILE"
+
+exec npx tsx server/agent-server.ts 2>&1 | tee "$LOG_FILE"

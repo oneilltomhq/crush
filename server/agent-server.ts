@@ -123,8 +123,10 @@ The user speaks to you and you speak back via TTS. You are the front-of-house: a
 
 - Keep responses SHORT — 1-3 sentences. This is a conversation, not a monologue.
 - No markdown formatting in speech. Just talk naturally.
-- ALWAYS include spoken text in your response, even when using tools. Say what you're doing.
+- NEVER parrot back what the user just said. Don't say "So you're interested in X" or "It sounds like you want Y." They know what they said. Move the conversation FORWARD.
+- ALWAYS include spoken text in your response, even when using tools. Say what you're doing. If you call a tool, your spoken text must explain the action: "I'm kicking off a research task on that" or "Let me pull that up."
 - Respond FAST. Never leave the user in silence.
+- NEVER respond with just a fragment like "I'll" or "Let me" — always complete your thought.
 
 ## How you think
 
@@ -305,12 +307,15 @@ function buildFohTools(conn: Connection): AgentTool[] {
     name: 'delegate_task',
     label: 'Delegate Task',
     description: `Delegate a task to a background worker agent. Returns immediately — the worker runs async.
+
+CRITICAL: The task description is the ONLY context the worker receives. It has NO memory of your conversation. Write a DETAILED brief with all relevant specifics: who, what, where, constraints, context. A vague task like "research companies" will produce useless generic results. A good task includes the user's specific situation, goals, and what kind of output is needed.
+
 Worker types:
 - research: deep web research with parallel sub-queries. Use for any research, analysis, or information gathering.
 - shell: system commands, coding, file operations, git, package management.
 - browser: CDP browser automation, web scraping, authenticated site actions (LinkedIn, X, etc.).`,
     parameters: Type.Object({
-      task: Type.String({ description: 'Clear, specific description of what to accomplish' }),
+      task: Type.String({ description: 'Detailed task brief with all context the worker needs. Be SPECIFIC — include who the user is, what they need, constraints, and desired output format.' }),
       worker_type: Type.Union([
         Type.Literal('research'),
         Type.Literal('shell'),
@@ -527,9 +532,37 @@ async function processText(conn: Connection, userText: string): Promise<void> {
     const messages = conn.agent.state.messages;
     const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
     const spoken = lastAssistant ? extractText(lastAssistant) : '';
-    send(conn.ws, { type: 'response', text: spoken });
-    if (spoken) {
-      console.log(`${tag} Response: "${spoken.substring(0, 80)}${spoken.length > 80 ? '...' : ''}"`);
+
+    // Log full assistant message structure for debugging
+    if (lastAssistant) {
+      const blocks = lastAssistant.content?.map((b: any) => `${b.type}${b.type === 'text' ? `(${b.text?.length || 0} chars)` : ''}`);
+      console.log(`${tag} Assistant blocks: [${blocks?.join(', ')}]`);
+      if (spoken.length < 10) {
+        console.log(`${tag} WARNING: Very short response: "${spoken}"`);
+        console.log(`${tag} Full content: ${JSON.stringify(lastAssistant.content?.filter((b: any) => b.type === 'text'))}`);
+      }
+    }
+
+    // Guard against stub responses (e.g. "I'll" after a tool call).
+    // If the spoken text is <15 chars and tools were used, the model
+    // likely got confused — nudge it to produce a real response.
+    const toolsUsed = lastAssistant?.content?.some((b: any) => b.type === 'toolCall') ?? false;
+    let finalSpoken = spoken;
+    if (spoken.length > 0 && spoken.length < 15 && toolsUsed) {
+      console.log(`${tag} Stub response after tool call: "${spoken}" — nudging for real response`);
+      await conn.agent.prompt('[System: Your last response was cut short. Tell the user what you just did and what to expect. One to two sentences.]');
+      const msgs2 = conn.agent.state.messages;
+      const retry = [...msgs2].reverse().find(m => m.role === 'assistant');
+      const retryText = retry ? extractText(retry) : '';
+      if (retryText.length > spoken.length) {
+        finalSpoken = retryText;
+        console.log(`${tag} Recovered: "${retryText.substring(0, 80)}"`);
+      }
+    }
+
+    send(conn.ws, { type: 'response', text: finalSpoken });
+    if (finalSpoken) {
+      console.log(`${tag} Response: "${finalSpoken.substring(0, 80)}${finalSpoken.length > 80 ? '...' : ''}"`);
     }
   } catch (err: any) {
     console.error(`${tag} Error:`, err.message);
