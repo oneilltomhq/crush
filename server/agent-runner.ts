@@ -135,11 +135,11 @@ async function runSubQuery(
       systemPrompt: `You are a focused research sub-agent. You have ONE specific query to research.
 
 Rules:
-- Start with web_search — it returns clean, structured results instantly
-- Only use browse if you need to read a specific page in more depth
+- Use web_search — it returns clean, structured results with extracted page content instantly
+- You do NOT have a browser. web_search is your only tool. It is sufficient.
 - Stay focused on your specific query — don't go off-topic
 - Extract concrete facts: names, numbers, dates, URLs
-- 1-3 tool calls should be enough. Don't over-search.
+- 1-2 web_search calls should be enough. Don't over-search.
 - Your final response (when you stop using tools) should be a structured summary in markdown
 - Include source URLs
 
@@ -170,7 +170,7 @@ Today is ${new Date().toISOString().split('T')[0]}.`,
   });
 
   try {
-    await agent.prompt(`Research this specific query: ${query}\n\nUse web_search first, then browse specific pages if needed. Report back with structured findings.`);
+    await agent.prompt(`Research this specific query: ${query}\n\nUse web_search to find the answer. Report back with structured findings.`);
   } catch (err: any) {
     console.error(`${tag} Agent error:`, err.message);
     return { query, findings: `Error researching: ${err.message}`, keyUrls };
@@ -351,15 +351,10 @@ Keep queries specific and searchable. Each should target a distinct aspect of th
     this.state = 'synthesizing';
     this.progress('Synthesizing findings into final report...');
 
-    // Open browser panes for top URLs (max 4)
-    const allUrls = results.flatMap(r => r.keyUrls);
-    const uniqueUrls = [...new Map(allUrls.map(u => [u.url, u])).values()].slice(0, 4);
-    for (const { title, url } of uniqueUrls) {
-      send(this.ws, {
-        type: 'command', name: 'create_pane',
-        input: { pane_type: 'browser', label: title.substring(0, 30), url },
-      });
-    }
+    // Source URLs are available in results but we don't auto-open browser
+    // panes for them — streaming JPEG screencasts of static pages the user
+    // didn't ask to see is pure waste. The synthesis includes source URLs
+    // so the user can ask to open specific ones if interested.
 
     const findingsSummary = results.map((r, i) =>
       `### Sub-query ${i + 1}: ${r.query}\n\n${r.findings}`

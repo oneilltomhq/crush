@@ -6,7 +6,7 @@
  *
  * Tools are grouped into sets for different agent roles:
  *  - voiceTools: full set for the interactive voice agent
- *  - researchTools: subset for research sub-runners (web_search + browse only)
+ *  - researchTools: subset for research sub-runners (web_search only — no browse)
  */
 
 import { Type } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
@@ -513,7 +513,6 @@ export function browserWorkerTools(ws: WebSocket): AgentTool[] {
 export function researchSubTools(): AgentTool[] {
   return [
     makeWebSearchTool(),
-    makeStandaloneBrowseTool(),
   ];
 }
 

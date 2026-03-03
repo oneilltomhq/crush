@@ -698,6 +698,9 @@ function initVoice(): void {
 
   voiceClient.connect();
 
+  // Expose for debug/testing — inject text without mic
+  (window as any).__voiceClient = voiceClient;
+
   // Don't auto-start — wait for user gesture (tap to start)
 }
 
