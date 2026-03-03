@@ -30,7 +30,7 @@ const AUTH_CDP_PORT = parseInt(process.env.AUTH_CDP_PORT || '9223');
 function getTavilyKey(): string { return process.env.TAVILY_API_KEY || ''; }
 const TODO_PATH = path.join(os.homedir(), '.openclaw', 'workspace', 'todo.md');
 const PROJECT_ROOT = '/home/exedev/crush';
-const PROFILE_DIR = path.join(os.homedir(), '.crush', 'profile');
+export const PROFILE_DIR = process.env.CRUSH_PROFILE_DIR || path.join(os.homedir(), '.crush', 'profile');
 const DOWNLOADS_DIR = path.join(os.homedir(), '.crush', 'downloads');
 
 // ---------------------------------------------------------------------------

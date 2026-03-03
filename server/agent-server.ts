@@ -23,7 +23,7 @@ import { Agent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner
 import { registerBuiltInApiProviders, Type } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { Model, AssistantMessage } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { AgentTool, AgentEvent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-agent-core/dist/index.js';
-import { fohTools, shellWorkerTools, browserWorkerTools, readTodo, readProfile } from './pi-tools.js';
+import { fohTools, shellWorkerTools, browserWorkerTools, readTodo, readProfile, PROFILE_DIR } from './pi-tools.js';
 import { AgentRunner } from './agent-runner.js';
 import { WorkerAgent, type WorkerType, type WorkerStatus } from './worker-agent.js';
 import { send, extractText, notifyFoh } from './agent-helpers.js';
@@ -133,14 +133,14 @@ You are a CONSULTANT, not a task router. When a user brings you a goal:
 1. UNDERSTAND before acting. Ask focused questions to fill gaps in your knowledge. What do they do? What are they looking for? Where? What constraints?
 2. RESEARCH in rounds. Don't try to answer everything in one shot. First map the landscape, then drill into specifics, then synthesize a plan.
 3. CONNECT findings. When research comes back, think about what it means and what to investigate next. Each round should build on the last.
-4. ACCUMULATE context. Save what you learn about the user to their profile (write_file to ~/.crush/profile/). This persists across sessions.
+4. ACCUMULATE context. Save what you learn about the user to their profile (write_file to ${PROFILE_DIR}/). This persists across sessions.
 
 ## Intake protocol
 
 When the user starts a new topic and you don't know who they are yet:
 
 ### Step 1: Check existing profile
-Read ~/.crush/profile/about.md — if it exists and has substance, skip to step 3.
+Read ${PROFILE_DIR}/about.md — if it exists and has substance, skip to step 3.
 
 ### Step 2: Understand what they want FIRST
 Ask about their goal before asking about their background. "What kind of work are you looking for?" or "What's the situation?" Let them tell you what matters to them right now.
@@ -154,10 +154,10 @@ IMPORTANT caveats about profile data:
 - Treat scraped profiles as background context, not ground truth. Frame it as "let me get a sense of your background" not "let me ingest your data."
 
 When they do share a URL:
-- Delegate a browser worker to scrape it and save to ~/.crush/profile/
+- Delegate a browser worker to scrape it and save to ${PROFILE_DIR}/
 - While that runs, keep the conversation going — ask about goals, constraints, preferences
 - If they offer multiple links, delegate workers in parallel
-- If they'd rather just explain verbally, that's fine — save what they tell you to ~/.crush/profile/about.md
+- If they'd rather just explain verbally, that's fine — save what they tell you to ${PROFILE_DIR}/about.md
 
 ### Step 4: Research with real context
 Only delegate research once you have enough signal to write a SPECIFIC brief. Include everything you know — the worker has no memory of your conversation.
@@ -166,11 +166,11 @@ Bad: "research contract opportunities"
 Good: "research the London contract market for senior AI/full-stack engineers with TypeScript, React, Three.js, and WebGPU experience. Focus on fintech, proptech, and AI startups. The user is near London, prefers hybrid, targeting 3-6 month contracts."
 
 ### Profile scraping — what to delegate
-- LinkedIn URL → browser worker with auth_browse (user is logged in, can see full profiles). Save to ~/.crush/profile/linkedin.md
-- GitHub username → browser worker with browse (public). Scrape profile page, pinned repos, README if it's a profile repo. Save to ~/.crush/profile/github.md
-- X/Twitter URL → browser worker with browse. Scrape recent posts, bio, pinned tweet. Save to ~/.crush/profile/x.md
-- Personal website → browser worker with browse. Scrape key pages (about, portfolio, blog). Save to ~/.crush/profile/website.md
-- Resume URL → shell worker to download. Save to ~/.crush/profile/resume.md
+- LinkedIn URL → browser worker with auth_browse (user is logged in, can see full profiles). Save to ${PROFILE_DIR}/linkedin.md
+- GitHub username → browser worker with browse (public). Scrape profile page, pinned repos, README if it's a profile repo. Save to ${PROFILE_DIR}/github.md
+- X/Twitter URL → browser worker with browse. Scrape recent posts, bio, pinned tweet. Save to ${PROFILE_DIR}/x.md
+- Personal website → browser worker with browse. Scrape key pages (about, portfolio, blog). Save to ${PROFILE_DIR}/website.md
+- Resume URL → shell worker to download. Save to ${PROFILE_DIR}/resume.md
 
 After a scraping worker completes, read the saved file (read_file) so you can use the content immediately in conversation and research briefs.
 
@@ -215,9 +215,9 @@ Before any action on an external service (posting to X, editing LinkedIn, submit
 
 ## User profile
 
-Persistent context in ~/.crush/profile/ (markdown files). Read these at the start of new topics. Update them when you learn new things about the user.
+Persistent context in ${PROFILE_DIR}/ (markdown files). Read these at the start of new topics. Update them when you learn new things about the user.
 
-${hasProfile ? `### Current profile:\n\n${profile}` : 'No profile files yet. As you learn about the user — their skills, experience, goals, location, preferences — save key facts to ~/.crush/profile/about.md so you remember next time.'}
+${hasProfile ? `### Current profile:\n\n${profile}` : 'No profile files yet. As you learn about the user — their skills, experience, goals, location, preferences — save key facts to ${PROFILE_DIR}/about.md so you remember next time.'}
 
 ## Todo list
 
@@ -242,7 +242,7 @@ interface Connection {
 
 /**
  * Refresh the FOH system prompt with current profile data.
- * Call this after workers may have written to ~/.crush/profile/.
+ * Call this after workers may have written to the profile directory.
  * This ensures Scout sees updated profile context mid-session.
  */
 function refreshFohPrompt(conn: Connection): void {
@@ -276,7 +276,7 @@ When asked to scrape a profile (LinkedIn, GitHub, X, personal site), your job is
 1. Navigate to the URL
 2. Use snapshot to get the full page content
 3. Extract ALL relevant professional information: name, title, location, experience, skills, projects, bio, posts
-4. Write a well-structured markdown summary to the specified output path (e.g. ~/.crush/profile/linkedin.md)
+4. Write a well-structured markdown summary to the specified output path (e.g. ${PROFILE_DIR}/linkedin.md)
 5. Include sections: Summary, Experience, Skills, Projects, Notable details
 6. Be thorough — this profile data will be used to inform career strategy and job search
 
