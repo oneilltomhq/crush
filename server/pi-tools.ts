@@ -37,6 +37,13 @@ const DOWNLOADS_DIR = path.join(os.homedir(), '.crush', 'downloads');
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Expand leading ~ to the user's home directory. */
+function expandTilde(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 function textResult(text: string): AgentToolResult<any> {
   return { content: [{ type: 'text', text }], details: {} };
 }
@@ -199,7 +206,8 @@ export function makeReadFileTool(): AgentTool {
       path: Type.String({ description: `Path to the file (absolute or relative to ${PROJECT_ROOT})` }),
     }),
     execute: async (_id, params) => {
-      const absPath = path.isAbsolute(params.path) ? params.path : path.join(PROJECT_ROOT, params.path);
+      const expanded = expandTilde(params.path);
+      const absPath = path.isAbsolute(expanded) ? expanded : path.join(PROJECT_ROOT, expanded);
       try {
         const content = fs.readFileSync(absPath, 'utf-8');
         return textResult(truncate(content, 12000));
@@ -221,7 +229,8 @@ export function makeWriteFileTool(): AgentTool {
       content: Type.String({ description: 'File content' }),
     }),
     execute: async (_id, params) => {
-      const absPath = path.isAbsolute(params.path) ? params.path : path.join(PROJECT_ROOT, params.path);
+      const expanded = expandTilde(params.path);
+      const absPath = path.isAbsolute(expanded) ? expanded : path.join(PROJECT_ROOT, expanded);
       try {
         fs.mkdirSync(path.dirname(absPath), { recursive: true });
         fs.writeFileSync(absPath, params.content, 'utf-8');

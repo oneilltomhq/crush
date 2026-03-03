@@ -6,3 +6,5 @@ vendor/
 .npmrc
 .env*
 .pi/
+# Safety: never commit a literal ~ directory (tilde expansion bug)
+~
