@@ -53,7 +53,7 @@ type ServerMessage =
 
 const DEEPGRAM_WS_URL = 'wss://api.deepgram.com/v1/listen';
 const DEEPGRAM_TTS_URL = 'https://api.deepgram.com/v1/speak';
-const DEEPGRAM_TTS_MODEL = 'aura-asteria-en';
+const DEEPGRAM_TTS_MODEL = 'aura-arcas-en';
 
 const DEEPGRAM_PARAMS: Record<string, string> = {
   model: 'nova-3',
