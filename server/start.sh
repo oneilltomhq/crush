@@ -43,8 +43,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- Logging ---
-LOG_DIR="server/logs"
+# --- Logging (XDG_STATE_HOME/crush/logs/) ---
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/crush/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/$(date +%Y%m%d-%H%M%S).log"
 echo "Logging to $LOG_FILE"

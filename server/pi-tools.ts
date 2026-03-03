@@ -30,8 +30,13 @@ const AUTH_CDP_PORT = parseInt(process.env.AUTH_CDP_PORT || '9223');
 function getTavilyKey(): string { return process.env.TAVILY_API_KEY || ''; }
 const TODO_PATH = path.join(os.homedir(), '.openclaw', 'workspace', 'todo.md');
 const PROJECT_ROOT = '/home/exedev/crush';
-export const PROFILE_DIR = process.env.CRUSH_PROFILE_DIR || path.join(os.homedir(), '.crush', 'profile');
-const DOWNLOADS_DIR = path.join(os.homedir(), '.crush', 'downloads');
+// XDG Base Directory paths (with fallbacks)
+const XDG_DATA_HOME = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+const XDG_STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+
+export const PROFILE_DIR = process.env.CRUSH_PROFILE_DIR || path.join(XDG_DATA_HOME, 'crush', 'profile');
+const DOWNLOADS_DIR = path.join(XDG_DATA_HOME, 'crush', 'downloads');
+export const LOG_DIR = path.join(XDG_STATE_HOME, 'crush', 'logs');
 
 // ---------------------------------------------------------------------------
 // Helpers
