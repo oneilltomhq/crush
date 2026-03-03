@@ -696,7 +696,6 @@ function initVoice(): void {
       if (data.voiceCredentials) {
         voiceClient!.setCredentials(
           data.voiceCredentials.deepgramApiKey,
-          data.voiceCredentials.elevenlabsApiKey,
         );
       }
 

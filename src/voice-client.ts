@@ -7,7 +7,7 @@
  * State machine:  idle → listening → processing → speaking → listening → ...
  *                                                           ↘ idle (if toggled off)
  *
- * Browser connects directly to Deepgram (STT) and ElevenLabs (TTS).
+ * Browser connects directly to Deepgram (STT and TTS).
  * Server is a pure text-in/text-out LLM bridge. See ADR 005.
  */
 
@@ -29,8 +29,7 @@ export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking';
 export interface VoiceClientOptions {
   wsUrl?: string;
   deepgramApiKey?: string;
-  elevenlabsApiKey?: string;
-  elevenlabsVoiceId?: string;
+  deepgramTtsModel?: string;
 
   onTranscript?: (text: string, isFinal: boolean) => void;
   onResponse?: (text: string) => void;
@@ -38,7 +37,7 @@ export interface VoiceClientOptions {
   onError?: (message: string) => void;
   onConnected?: (connected: boolean) => void;
   onCommand?: (command: { name: string; input: Record<string, unknown> }) => void;
-  onInit?: (data: { todo?: string; voiceCredentials?: { deepgramApiKey?: string; elevenlabsApiKey?: string } }) => void;
+  onInit?: (data: { todo?: string; voiceCredentials?: { deepgramApiKey?: string } }) => void;
 }
 
 type ServerMessage =
@@ -46,15 +45,15 @@ type ServerMessage =
   | { type: 'thinking' }
   | { type: 'error'; message: string }
   | { type: 'command'; name: string; input: Record<string, unknown> }
-  | { type: 'init'; todo?: string; voiceCredentials?: { deepgramApiKey?: string; elevenlabsApiKey?: string } };
+  | { type: 'init'; todo?: string; voiceCredentials?: { deepgramApiKey?: string } };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const DEEPGRAM_WS_URL = 'wss://api.deepgram.com/v1/listen';
-const ELEVENLABS_TTS_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
-const ELEVENLABS_VOICE_CHARLIE = 'IKne3meq5aSn9XLyUdCD';
+const DEEPGRAM_TTS_URL = 'https://api.deepgram.com/v1/speak';
+const DEEPGRAM_TTS_MODEL = 'aura-asteria-en';
 
 const DEEPGRAM_PARAMS: Record<string, string> = {
   model: 'nova-3',
@@ -104,9 +103,8 @@ export class VoiceClient {
   }
 
   /** Set voice credentials (received from server). */
-  setCredentials(deepgramApiKey?: string, elevenlabsApiKey?: string): void {
+  setCredentials(deepgramApiKey?: string): void {
     if (deepgramApiKey) this.opts.deepgramApiKey = deepgramApiKey;
-    if (elevenlabsApiKey) this.opts.elevenlabsApiKey = elevenlabsApiKey;
   }
 
   // =========================================================================
@@ -375,10 +373,10 @@ export class VoiceClient {
 
       case 'response':
         this.opts.onResponse?.(msg.text);
-        if (msg.text && this.opts.elevenlabsApiKey) {
+        if (msg.text && this.opts.deepgramApiKey) {
           this.speakTTS(msg.text);
         } else {
-          // No TTS — go straight back to listening or idle
+          // No TTS key — go straight back to listening or idle
           this.afterResponse();
         }
         break;
@@ -412,7 +410,7 @@ export class VoiceClient {
   }
 
   // =========================================================================
-  // ElevenLabs TTS
+  // Deepgram TTS
   // =========================================================================
 
   private cancelTTS(): void {
@@ -429,20 +427,17 @@ export class VoiceClient {
     this.setState('speaking');
     this.abortTTS = new AbortController();
 
-    const voiceId = this.opts.elevenlabsVoiceId ?? ELEVENLABS_VOICE_CHARLIE;
-    const url = `${ELEVENLABS_TTS_URL}/${voiceId}/stream`;
-    const apiKey = this.opts.elevenlabsApiKey!;
+    const model = this.opts.deepgramTtsModel ?? DEEPGRAM_TTS_MODEL;
+    const apiKey = this.opts.deepgramApiKey!;
 
     try {
-      const response = await fetch(url, {
+      const response = await fetch(`${DEEPGRAM_TTS_URL}?model=${model}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'xi-api-key': apiKey },
-        body: JSON.stringify({
-          text,
-          model_id: 'eleven_turbo_v2_5',
-          output_format: 'mp3_44100_128',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0 },
-        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Token ${apiKey}`,
+        },
+        body: JSON.stringify({ text }),
         signal: this.abortTTS.signal,
       });
 

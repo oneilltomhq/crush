@@ -101,7 +101,7 @@ function requireEnv(name: string): string {
 
 // Voice credentials — server-side, sent to client in init
 const DEEPGRAM_API_KEY = requireEnv('DEEPGRAM_API_KEY');
-const ELEVENLABS_API_KEY = requireEnv('ELEVENLABS_API_KEY');
+// ElevenLabs no longer used — TTS moved to Deepgram (see voice-client.ts)
 
 const WS_PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === '--port') || '8092');
 
@@ -570,7 +570,6 @@ function handleConnection(ws: WebSocket): void {
     todo: readTodo(),
     voiceCredentials: {
       deepgramApiKey: DEEPGRAM_API_KEY,
-      elevenlabsApiKey: ELEVENLABS_API_KEY,
     },
   });
 
