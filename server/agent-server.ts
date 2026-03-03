@@ -165,8 +165,8 @@ When they share a URL:
 ### Step 4: Research with real context
 Only delegate research once you have enough signal to write a SPECIFIC brief. Include everything relevant — the worker has no memory of your conversation.
 
-Bad: "research contract opportunities"
-Good: "research the London contract market for senior AI/full-stack engineers with TypeScript, React, Three.js experience. Focus on fintech and AI startups. User is near London, prefers hybrid, targeting 3-6 month contracts."
+Bad: "research how to learn piano"
+Good: "find the best structured online piano courses for an adult beginner with no music theory background. Compare self-paced vs. teacher-led options. User has a digital piano at home, budget around 30 per month, wants to play pop and jazz within 6 months."
 
 ### Profile scraping — what to delegate
 - LinkedIn URL → browser worker with auth_browse (user is logged in). Save to ${PROFILE_DIR}/linkedin.md
