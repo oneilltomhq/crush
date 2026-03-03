@@ -4,43 +4,64 @@ Living document. Stories describe **what the user wants to accomplish**, not imp
 
 ---
 
-## US-1: Contract lead finder
+## US-1: Contract procurement — map the landscape
 
-**As a** freelance AI/agentic engineer looking for work,  
-**I want to** tell Crush what kind of contracts I'm after and have it find, qualify, and summarise leads,  
-**so that** I spend my time on outreach and interviews, not trawling job boards.
+**As a** freelance AI/agentic engineer looking for contract work,  
+**I want** Crush to help me build a structured picture of the market I'm operating in,  
+**so that** I can pursue opportunities from a position of clarity, not guesswork.
+
+### The insight
+
+Finding contracts isn't a search problem — it's a mapping problem. Before you can evaluate any lead, you need to know the territory:
+
+- **Demand landscape**: Where is AI agent work happening? Startups building agent products, enterprises adopting agent tooling, agencies staffing AI projects, open-source orgs funding development.
+- **Engagement models**: Staff augmentation, fixed-scope project, retainer/fractional, full embedded team member. Each has different rate dynamics and sales cycles.
+- **Channels**: LinkedIn jobs, Toptal/Turing/Gun.io, HN Who's Hiring, X/Twitter network, warm intros, specialist recruiters, direct outreach to founders. Which have signal for *this* kind of work?
+- **Positioning**: What's your specific edge? "AI engineer" is noise. "Built a voice-driven agentic workspace with browser automation, VT emulation, and 3D spatial UI" is signal. How does your portfolio map to what buyers are actually looking for?
+- **Rate/terms reality**: What are people actually paying for senior agentic engineering? How does remote vs. on-site, US vs. UK, W-2 vs. 1099/Ltd affect that?
 
 ### Happy path
 
-1. User says: "Find me AI agent engineering contracts — remote, 3-6 months, $150+/hr."
-2. Crush confirms the brief and kicks off research (Tavily searches across job boards, freelance platforms, LinkedIn job posts, HN Who's Hiring, etc.).
-3. Research results appear in a **text pane** — a ranked shortlist of leads with company, role, rate/salary, source URL.
-4. User reviews the list by voice: "Tell me more about the second one" → Crush fetches the full listing, shows it in a text pane.
-5. User says: "That one looks good, open it" → Crush opens the listing in a **browser pane** (auth_browse if it's LinkedIn, browse otherwise).
-6. User says: "Save the top 3 to my leads file" → Crush writes a structured markdown file to `~/.local/share/crush/leads/`.
+1. User says: "I need to find AI agent engineering contracts. Help me map out the landscape."
+2. Crush probes briefly — what kind of work, what geo, any constraints? (Not a form — a quick exchange.)
+3. Crush kicks off research — but structured by *facet*, not keyword. Sub-queries target: demand signals, engagement models, active channels, rate benchmarks, competitive positioning.
+4. Results arrive as a **landscape pane** — a structured text artifact organizing the territory, not a list of job posts.
+5. User and Crush refine the map together: "I think the startup/seed-stage segment is most interesting" → Crush drills deeper into that facet.
+6. Once the landscape is clear, user says: "Okay, now find me actual leads in the startup segment" → *that's* when lead generation starts, informed by the map.
+7. Leads are qualified against the landscape: "This one's a Series A building agent infra — strong fit based on your profile" vs. "This is staff aug for a bank's chatbot — low fit."
 
-### What makes this a good first story
+### Phases (each produces a scene artifact)
 
-- Uses **existing capabilities**: web_search, auth_browse, text panes, file writing. No new pane types needed.
-- It's a **real workflow** the developer actually wants to do, not a toy demo.
-- Exercises the consultative pattern (US-2): Crush probes for criteria, researches in rounds, refines.
-- Natural follow-ups: "search again but include part-time", "check if that company has other openings", "draft an intro message".
-- Demoing it is compelling — voice-driven job search that actually works.
+| Phase | Artifact | What it is |
+|---|---|---|
+| 1. Landscape | Market map pane | Structured view: segments, channels, rate ranges, demand signals |
+| 2. Positioning | Positioning pane | User's edge, portfolio-to-market fit, talking points |
+| 3. Leads | Pipeline pane | Qualified leads with fit scores against the map |
+| 4. Outreach | Drafts pane | Tailored messages per lead, tracking status |
+
+US-1 is **phase 1 only**. Get the map right. The other phases are natural follow-on stories.
 
 ### What needs to work
 
-1. **Research pipeline** delivers focused, deduplicated results (just fixed: Tavily-only sub-runners).
-2. **FOH prompt** knows how to structure the lead-finding workflow (probe → research → present → drill-down → save).
-3. **Text pane rendering** handles the shortlist cleanly (markdown table or structured list).
-4. **auth_browse** works for LinkedIn drill-down (requires SSH tunnel to user's browser).
-5. **File save** to `~/.local/share/crush/leads/` with structured format.
+1. **Research pipeline** can be briefed by facet (not just keyword search). The planner needs to decompose "map the landscape" into structured sub-queries per facet.
+2. **FOH** understands this is a multi-artifact, multi-round workflow — not "search and dump."
+3. **Synthesis** produces structured output (sections, not narrative) that maps to the territory.
+4. **Text pane** renders the map artifact clearly — the user should be able to look at it and see the landscape.
+5. **Iterative refinement**: user can say "drill into the startup segment" and the map updates/expands.
+
+### What already works
+
+- Research pipeline with Tavily-only sub-runners.
+- Text pane creation and updating.
+- FOH delegation to research workers.
+- Profile data (Crush already knows the user's GitHub/background).
 
 ### Gaps to close
 
-- FOH needs a workflow hint for lead-finding (or a general "structured research → artifact" pattern).
-- `leads/` directory and save format need defining.
-- Research pipeline needs to return results in a structured format the FOH can present as a ranked list, not just a prose dump.
-- Text pane scrolling/selection UX for reviewing a list by voice ("tell me about number 3").
+- FOH prompt needs guidance on *landscape-style* research vs. generic search delegation.
+- Research planner prompt could be improved to decompose by facet when the goal is "map" not "find."
+- Synthesis prompt needs to produce structured artifact, not narrative essay.
+- No mechanism yet for "drill into this section" → targeted follow-up research that *updates* an existing pane rather than creating a new one.
 
 ---
 
