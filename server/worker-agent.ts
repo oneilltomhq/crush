@@ -62,6 +62,7 @@ export class WorkerAgent {
   }
 
   start(): void {
+    if (this.state === 'aborted') return;
     this.state = 'running';
     const prompt = `Accomplish the following goal. When finished, provide a clear final summary of what was done and the outcome.\n\nGoal: ${this.opts.goal}`;
 
