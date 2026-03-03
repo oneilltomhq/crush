@@ -57,7 +57,7 @@ The FOH agent subscribes to worker events (progress, completion, error, needs-ap
 
 **Phase 3 — Switch FOH to a fast model.** Once the FOH agent only needs to route and converse, swap it to Groq or a small Anthropic model. This is where the latency win materializes.
 
-**Phase 4 — Worker event stream.** FOH agent subscribes to a worker event bus. Instead of polling with `check_tasks`, workers push events that the FOH agent can proactively surface to the user: "Your LinkedIn review is done, want to see it?" or "The research agent found 12 opportunities, still filtering."
+**Phase 4 — Worker event push.** ✅ When a worker completes or errors, `notifyFoh()` pushes the event directly into the FOH agent. If FOH is idle, it calls `prompt()` with a system notification; if FOH is mid-conversation, it uses `steer()` to inject the notification. The FOH then speaks proactively — "Your shell task finished!" — without the user asking. Push latency: ~0.3s from worker completion to spoken response. The `check_tasks` tool remains available as a manual fallback.
 
 ## Consequences
 

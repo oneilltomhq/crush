@@ -133,6 +133,14 @@ You do NOT execute complex tasks yourself. You delegate to background workers:
 
 Workers run in the background. You can check on them with check_tasks and abort them with abort_task.
 
+## Proactive notifications
+
+You will receive [Worker notification] messages when workers complete or fail. When you get one:
+- Tell the user immediately in natural speech (e.g. "Your research is done!" or "The shell task finished — here's what happened.")
+- Briefly summarize the result or error
+- If relevant, suggest next steps
+- Do NOT use any tools in response to notifications — just speak
+
 You DO handle directly (no delegation needed):
 - Reading/writing local files (read_file, write_file) — these are instant
 - Managing workspace panes (create_pane, remove_pane, scroll_pane)
@@ -264,11 +272,13 @@ Worker types:
           onComplete: (summary) => {
             console.log(`${tag} Complete: ${summary.substring(0, 80)}`);
             send(conn.ws, { type: 'worker_complete', workerId, summary });
+            notifyFoh(conn, `Research worker ${workerId} finished. Task: "${task.substring(0, 60)}". Summary: ${summary.substring(0, 150)}`);
           },
           onProgress: (status) => console.log(`${tag} ${status}`),
           onError: (err) => {
             console.error(`${tag} Error: ${err}`);
             send(conn.ws, { type: 'worker_error', workerId, error: err });
+            notifyFoh(conn, `Research worker ${workerId} failed. Task: "${task.substring(0, 60)}". Error: ${err}`);
           },
         });
         conn.workers.set(workerId, runner);
@@ -306,10 +316,12 @@ Worker types:
               input: { label: paneLabel, content: result },
             });
             send(conn.ws, { type: 'worker_complete', workerId: wId, summary: result.substring(0, 200) });
+            notifyFoh(conn, `${worker_type} worker ${wId} finished. Task: "${task.substring(0, 60)}". Result: ${result.substring(0, 150)}`);
           },
           onError: (wId, err) => {
             console.error(`${tag} Error: ${err}`);
             send(conn.ws, { type: 'worker_error', workerId: wId, error: err });
+            notifyFoh(conn, `${worker_type} worker ${wId} failed. Task: "${task.substring(0, 60)}". Error: ${err}`);
           },
         });
         conn.workers.set(workerId, worker);
@@ -370,6 +382,52 @@ Worker types:
 
   tools.push(delegateTaskTool, checkTasksTool, abortTaskTool);
   return tools;
+}
+
+// ---------------------------------------------------------------------------
+// Worker → FOH push notifications (ADR 009, Phase 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Push a worker event into the FOH agent so it proactively speaks to the user.
+ * - If FOH is idle: call prompt() directly
+ * - If FOH is busy: use steer() to inject mid-conversation
+ */
+async function notifyFoh(conn: Connection, notification: string): Promise<void> {
+  const tag = `[foh:${conn.id}]`;
+  console.log(`${tag} Worker notification: ${notification.substring(0, 100)}`);
+
+  // Wrap as a system-style user message so FOH knows to speak
+  const msg = `[Worker notification — tell the user immediately]: ${notification}`;
+
+  if (conn.processing) {
+    // FOH is mid-prompt — steer it
+    console.log(`${tag} FOH busy, steering`);
+    conn.agent.steer({ role: 'user', content: msg, timestamp: Date.now() });
+    // The running prompt() will pick up the steer, produce a response,
+    // and processText's finally block will extract and send it.
+    // But steer responses get extracted by the already-running processText.
+    // We don't need to do anything else.
+  } else {
+    // FOH is idle — prompt it directly
+    console.log(`${tag} FOH idle, prompting`);
+    conn.processing = true;
+    try {
+      send(conn.ws, { type: 'thinking' });
+      await conn.agent.prompt(msg);
+      const messages = conn.agent.state.messages;
+      const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+      const spoken = lastAssistant ? extractText(lastAssistant) : '';
+      if (spoken) {
+        send(conn.ws, { type: 'response', text: spoken });
+        console.log(`${tag} Proactive: "${spoken.substring(0, 80)}"`);
+      }
+    } catch (err: any) {
+      console.error(`${tag} Notify error:`, err.message);
+    } finally {
+      conn.processing = false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
