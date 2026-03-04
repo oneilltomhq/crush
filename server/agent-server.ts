@@ -26,7 +26,7 @@ import type { AgentTool, AgentEvent } from '/usr/lib/node_modules/openclaw/node_
 import { fohTools, shellWorkerTools, browserWorkerTools, readTodo, readProfile, PROFILE_DIR,
   makeShellTool, makeReadFileTool, makeWriteFileTool, makeWebSearchTool, makeDownloadTool,
   makeBrowseTool, makeAuthBrowseTool, makeStandaloneBrowseTool } from './pi-tools.js';
-import { loadAgents, getAgent, listAgents, reloadAgents, registerTool, resolveTools, type AgentDef } from './agent-loader.js';
+import { loadAgents, getAgent, listAgents, reloadAgents, registerTool, resolveTools, formatSkillsForPrompt, type AgentDef } from './agent-loader.js';
 import { AgentRunner } from './agent-runner.js';
 import { WorkerAgent, type WorkerType, type WorkerStatus } from './worker-agent.js';
 import { send, extractText, notifyFoh } from './agent-helpers.js';
@@ -418,6 +418,10 @@ Use 'agent' to select a named agent, or 'worker_type: research' for the built-in
           // Template variables in system prompt
           workerPrompt = agentDef.systemPrompt
             .replace(/\{today\}/g, new Date().toISOString().split('T')[0]);
+          // Inject available skills as XML block (Pi/OpenCode convention)
+          if (agentDef.skillNames.length > 0) {
+            workerPrompt += '\n\n' + formatSkillsForPrompt(agentDef.skillNames);
+          }
           workerModel = resolveModel(agentDef.modelAlias);
         } else {
           workerTools = effectiveType === 'shell'
