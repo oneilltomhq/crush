@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Pre-push hook: scan outgoing commits for secrets using gitleaks
+set -euo pipefail
+
+if ! command -v gitleaks &>/dev/null; then
+  echo "pre-push: gitleaks not installed, skipping secret scan"
+  exit 0
+fi
+
+# Read the push details from stdin
+while read -r local_ref local_oid remote_ref remote_oid; do
+  # Skip delete pushes
+  if [ "$local_oid" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+
+  # If remote branch is new, scan all commits
+  if [ "$remote_oid" = "0000000000000000000000000000000000000000" ]; then
+    range="$local_oid"
+  else
+    range="${remote_oid}..${local_oid}"
+  fi
+
+  echo "pre-push: scanning $range for secrets..."
+  if ! gitleaks detect --log-opts="$range" --verbose; then
+    echo ""
+    echo "⛔ Push blocked: gitleaks found secrets in outgoing commits."
+    echo "Fix the commits before pushing. Use 'gitleaks detect --log-opts=\"$range\" -v' for details."
+    exit 1
+  fi
+done
+
+exit 0
