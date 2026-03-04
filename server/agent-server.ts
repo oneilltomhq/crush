@@ -23,7 +23,10 @@ import { Agent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner
 import { registerBuiltInApiProviders, Type } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { Model, AssistantMessage } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/index.js';
 import type { AgentTool, AgentEvent } from '/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-agent-core/dist/index.js';
-import { fohTools, shellWorkerTools, browserWorkerTools, readTodo, readProfile, PROFILE_DIR } from './pi-tools.js';
+import { fohTools, shellWorkerTools, browserWorkerTools, readTodo, readProfile, PROFILE_DIR,
+  makeShellTool, makeReadFileTool, makeWriteFileTool, makeWebSearchTool, makeDownloadTool,
+  makeBrowseTool, makeAuthBrowseTool, makeStandaloneBrowseTool } from './pi-tools.js';
+import { loadAgents, getAgent, listAgents, reloadAgents, registerTool, resolveTools, type AgentDef } from './agent-loader.js';
 import { AgentRunner } from './agent-runner.js';
 import { WorkerAgent, type WorkerType, type WorkerStatus } from './worker-agent.js';
 import { send, extractText, notifyFoh } from './agent-helpers.js';
@@ -82,6 +85,33 @@ const WORKER_MODEL: Model<'anthropic-messages'> = {
 };
 
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
+
+// ---------------------------------------------------------------------------
+// Tool registry — maps tool name strings to factory functions
+// ---------------------------------------------------------------------------
+registerTool('shell', { type: 'plain', factory: makeShellTool });
+registerTool('read_file', { type: 'plain', factory: makeReadFileTool });
+registerTool('write_file', { type: 'plain', factory: makeWriteFileTool });
+registerTool('web_search', { type: 'plain', factory: makeWebSearchTool });
+registerTool('download', { type: 'plain', factory: makeDownloadTool });
+registerTool('browse', { type: 'ws', factory: makeBrowseTool });
+registerTool('auth_browse', { type: 'ws', factory: makeAuthBrowseTool });
+
+// ---------------------------------------------------------------------------
+// Model alias registry — agent defs reference models by alias
+// ---------------------------------------------------------------------------
+const MODEL_ALIASES: Record<string, Model<any>> = {};
+// Populated after model const definitions above, updated below after RESEARCH_MODEL etc. are used.
+MODEL_ALIASES['worker'] = WORKER_MODEL;
+MODEL_ALIASES['research'] = RESEARCH_MODEL;
+MODEL_ALIASES['foh'] = FOH_MODEL;
+
+function resolveModel(alias: string): Model<any> {
+  return MODEL_ALIASES[alias] || WORKER_MODEL;
+}
+
+// Bootstrap agent definitions
+const agents = loadAgents();
 if (!OPENROUTER_KEY) console.warn('[agent-server] OPENROUTER_API_KEY not set — research/FOH will fail');
 
 function resolveApiKey(provider: string): string {
@@ -302,7 +332,13 @@ When done, summarize what you scraped and where you saved it.`;
 function buildFohTools(conn: Connection): AgentTool[] {
   const tools = fohTools(conn.ws);
 
-  // delegate_task — creates a background worker
+  // delegate_task — creates a background worker from agent definitions
+  const agentList = listAgents();
+  const agentDescriptions = agentList.map(name => {
+    const def = getAgent(name)!;
+    return `- ${name}: ${def.description}`;
+  }).join('\n');
+
   const delegateTaskTool: AgentTool = {
     name: 'delegate_task',
     label: 'Delegate Task',
@@ -310,26 +346,38 @@ function buildFohTools(conn: Connection): AgentTool[] {
 
 CRITICAL: The task description is the ONLY context the worker receives. It has NO memory of your conversation. Write a DETAILED brief with all relevant specifics: who, what, where, constraints, context. A vague task like "research companies" will produce useless generic results. A good task includes the user's specific situation, goals, and what kind of output is needed.
 
-Worker types:
-- research: deep web research with parallel sub-queries. Use for any research, analysis, or information gathering.
-- shell: system commands, coding, file operations, git, package management.
-- browser: CDP browser automation, web scraping, authenticated site actions (LinkedIn, X, etc.).`,
+Available agents:
+${agentDescriptions}
+- research: deep web research with parallel sub-queries (built-in, not an agent definition).
+
+Use 'agent' to select a named agent, or 'worker_type: research' for the built-in research pipeline.`,
     parameters: Type.Object({
       task: Type.String({ description: 'Detailed task brief with all context the worker needs. Be SPECIFIC — include who the user is, what they need, constraints, and desired output format.' }),
-      worker_type: Type.Union([
+      agent: Type.Optional(Type.String({ description: `Named agent to use: ${agentList.join(', ')}` })),
+      worker_type: Type.Optional(Type.Union([
         Type.Literal('research'),
         Type.Literal('shell'),
         Type.Literal('browser'),
-      ], { description: 'Type of worker to use' }),
+      ], { description: 'Legacy worker type. Prefer using agent instead.' })),
     }),
     execute: async (_id, params) => {
-      const { task, worker_type } = params as { task: string; worker_type: WorkerType };
+      const { task, agent: agentName, worker_type: legacyType } = params as {
+        task: string; agent?: string; worker_type?: WorkerType;
+      };
+
+      // Resolve: named agent takes priority, then legacy worker_type, then default to shell
+      const agentDef = agentName ? getAgent(agentName) : undefined;
+      const effectiveType: WorkerType = agentDef
+        ? (agentDef.name as WorkerType)  // for pane labeling
+        : (legacyType || 'shell');
+
       const workerId = `w${++conn.workerCounter}`;
       const tag = `[worker:${workerId}]`;
+      const label = agentDef ? agentDef.name : effectiveType;
 
-      console.log(`${tag} Delegating ${worker_type}: "${task.substring(0, 80)}"`);
+      console.log(`${tag} Delegating ${label}: "${task.substring(0, 80)}"`);
 
-      if (worker_type === 'research') {
+      if (!agentDef && effectiveType === 'research') {
         // Use the specialized AgentRunner for research (3-phase pipeline)
         const notesPaneLabel = `Research: ${task.substring(0, 40)}${task.length > 40 ? '...' : ''}`;
         send(conn.ws, {
@@ -360,16 +408,29 @@ Worker types:
         conn.workers.set(workerId, runner);
         runner.start();
       } else {
-        // Use generic WorkerAgent for shell/browser tasks
-        const workerTools = worker_type === 'shell'
-          ? shellWorkerTools()
-          : browserWorkerTools(conn.ws);
-        const workerPrompt = worker_type === 'shell'
-          ? SHELL_WORKER_PROMPT
-          : BROWSER_WORKER_PROMPT;
+        // Resolve tools and prompt from agent definition or legacy defaults
+        let workerTools: AgentTool[];
+        let workerPrompt: string;
+        let workerModel: Model<any>;
+
+        if (agentDef) {
+          workerTools = resolveTools(agentDef.toolNames, conn.ws);
+          // Template variables in system prompt
+          workerPrompt = agentDef.systemPrompt
+            .replace(/\{today\}/g, new Date().toISOString().split('T')[0]);
+          workerModel = resolveModel(agentDef.modelAlias);
+        } else {
+          workerTools = effectiveType === 'shell'
+            ? shellWorkerTools()
+            : browserWorkerTools(conn.ws);
+          workerPrompt = effectiveType === 'shell'
+            ? SHELL_WORKER_PROMPT
+            : BROWSER_WORKER_PROMPT;
+          workerModel = WORKER_MODEL;
+        }
 
         // Create a pane for the worker's output
-        const paneLabel = `${worker_type}: ${task.substring(0, 35)}${task.length > 35 ? '...' : ''}`;
+        const paneLabel = `${label}: ${task.substring(0, 35)}${task.length > 35 ? '...' : ''}`;
         send(conn.ws, {
           type: 'command', name: 'create_pane',
           input: { pane_type: 'text', label: paneLabel, content: `*Working on: ${task}*\n\nStarting...` },
@@ -377,9 +438,9 @@ Worker types:
 
         const worker = new WorkerAgent({
           id: workerId,
-          type: worker_type,
+          type: agentDef ? 'generic' : effectiveType,
           goal: task,
-          model: WORKER_MODEL,
+          model: workerModel,
           tools: workerTools,
           systemPrompt: workerPrompt,
           getApiKey: resolveApiKey,
@@ -393,13 +454,13 @@ Worker types:
             });
             send(conn.ws, { type: 'worker_complete', workerId: wId, summary: result.substring(0, 200) });
             refreshFohPrompt(conn);
-            notifyFoh(conn, `${worker_type} worker ${wId} finished. Task: "${task.substring(0, 60)}". Result: ${result.substring(0, 150)}`);
+            notifyFoh(conn, `${label} worker ${wId} finished. Task: "${task.substring(0, 60)}". Result: ${result.substring(0, 150)}`);
           },
           onError: (wId, err) => {
             console.error(`${tag} Error: ${err}`);
             send(conn.ws, { type: 'worker_error', workerId: wId, error: err });
             refreshFohPrompt(conn);
-            notifyFoh(conn, `${worker_type} worker ${wId} failed. Task: "${task.substring(0, 60)}". Error: ${err}`);
+            notifyFoh(conn, `${label} worker ${wId} failed. Task: "${task.substring(0, 60)}". Error: ${err}`);
           },
         });
         conn.workers.set(workerId, worker);
@@ -407,7 +468,7 @@ Worker types:
       }
 
       return {
-        content: [{ type: 'text', text: `Task delegated to ${worker_type} worker (${workerId}). Running in background.` }],
+        content: [{ type: 'text', text: `Task delegated to ${label} worker (${workerId}). Running in background.` }],
         details: { workerId },
       };
     },
@@ -649,7 +710,7 @@ console.log(`Agent server (FOH/worker architecture) on ws://localhost:${WS_PORT}
 console.log(`FOH model: ${FOH_MODEL.id} via OpenRouter (Groq-hosted)`);
 console.log(`Worker models: research=${RESEARCH_MODEL.id}, shell/browser=${WORKER_MODEL.id}`);
 console.log(`FOH tools: ${toolNames.join(', ')}`);
-console.log(`Worker types: research (AgentRunner), shell (WorkerAgent), browser (WorkerAgent)`);
+console.log(`Agents: ${listAgents().join(', ')} (+ built-in research pipeline)`);
 
 wss.on('connection', handleConnection);
 wss.on('error', (err: Error) => console.error('[agent] Server error:', err.message));
