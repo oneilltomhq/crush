@@ -32,6 +32,7 @@ Server-authoritative (see ADR 004). The browser is a thin rendering client.
 ## Running
 
 ```bash
+git config core.hooksPath .githooks   # enable pre-push secret scanning
 npm install
 npm run dev          # Vite dev server (client)
 # Server components run separately — see server/*.ts
