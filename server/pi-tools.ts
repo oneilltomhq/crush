@@ -469,6 +469,24 @@ Commands: open <url>, get text body, snapshot -i, click @<ref>, scroll down`,
   };
 }
 
+/** Standalone auth_browse (no WebSocket — CLI use) */
+export function makeStandaloneAuthBrowseTool(): AgentTool {
+  return {
+    name: 'auth_browse',
+    label: 'Auth Browse',
+    description: `Control the user's authenticated browser (their real browser with logged-in sessions). Use for accessing sites the user is logged into (LinkedIn, X/Twitter, Gmail, etc.). Do NOT use for general research — use web_search or browse instead.`,
+    parameters: Type.Object({
+      command: Type.String({ description: 'agent-browser command (same syntax as browse tool)' }),
+    }),
+    execute: async (_id, params) => {
+      const args = parseBrowserArgs(params.command);
+      console.log(`[tool] auth_browse: ${args.join(' ')}`);
+      const output = await runAgentBrowser(args, AUTH_CDP_PORT);
+      return textResult(truncate(output, 8000));
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tool sets
 // ---------------------------------------------------------------------------
