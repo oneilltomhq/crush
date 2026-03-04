@@ -132,8 +132,21 @@ async function main() {
 
   const prompt = `Accomplish the following goal. When finished, provide a clear final summary of what was done and the outcome.\n\nGoal: ${goal}`;
 
-  try {
-    await agent.prompt(prompt);
+  const MAX_RETRIES = 3;
+  let attempt = 0;
+  let succeeded = false;
+
+  while (attempt < MAX_RETRIES && !succeeded) {
+    attempt++;
+    try {
+      if (attempt === 1) {
+        await agent.prompt(prompt);
+      } else {
+        console.log(`[run-agent] Retrying (attempt ${attempt}/${MAX_RETRIES})...`);
+        // Continue from where we left off — messages are preserved
+        await agent.continue();
+      }
+      succeeded = true;
     // Extract final text from last assistant message
     const messages = agent.state.messages;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -154,9 +167,16 @@ async function main() {
         }
       }
     }
-  } catch (err) {
-    console.error('[run-agent] Error:', err);
-    process.exit(1);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (attempt < MAX_RETRIES && (msg.includes('Could not parse') || msg.includes('JSON'))) {
+        console.warn(`[run-agent] Stream parse error (attempt ${attempt}/${MAX_RETRIES}): ${msg.substring(0, 120)}`);
+        // Agent state preserves messages — continue() will resume
+      } else {
+        console.error('[run-agent] Fatal error:', msg);
+        process.exit(1);
+      }
+    }
   }
 }
 
